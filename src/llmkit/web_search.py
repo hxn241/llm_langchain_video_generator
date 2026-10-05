@@ -12,6 +12,7 @@ Both return the SAME format, so the rest of the code does not change.
 """
 import json
 import os
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 
 import requests
@@ -20,6 +21,14 @@ from langchain_core.tools import tool
 from llmkit import config
 
 TAVILY_URL = "https://api.tavily.com/search"
+
+
+def _iso_date(text):
+    """Tavily's 'Wed, 30 Sep 2026 20:21:49 GMT' -> '2026-09-30' (as DuckDuckGo's); unknown formats as they come."""
+    try:
+        return parsedate_to_datetime(text).date().isoformat()
+    except (TypeError, ValueError):
+        return text
 
 
 def search(query, max_results=3, provider=None, region=None, news=False):
@@ -60,7 +69,7 @@ def search(query, max_results=3, provider=None, region=None, news=False):
         if news:
             for h, result in zip(response.get("results", []), results):
                 result["outlet"] = urlparse(h.get("url") or "").netloc.removeprefix("www.")
-                result["date"] = h.get("published_date", "")
+                result["date"] = _iso_date(h.get("published_date", ""))
         return {"answer": response.get("answer"), "results": results}
 
     raise ValueError(f"Unknown SEARCH_PROVIDER: {provider!r} (use 'duckduckgo' or 'tavily')")
