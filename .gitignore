@@ -1,0 +1,17 @@
+# Claves (copia .env.example a .env)
+.env
+
+# Entornos de Python
+.venv/
+.venv-tts/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Lo que genera el programa: runs, vídeos, checkpoints, índices
+data/
+.state/
+*.part
+
+# Referencia de la voz clonada: solo en local
+assets/voice_reference.wav

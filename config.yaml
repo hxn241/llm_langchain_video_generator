@@ -1,0 +1,127 @@
+# Configuración del pipeline. Las claves (API keys) van en el .env, nunca aquí.
+format: long                  # long (8-13 min) | short (45-60 s)
+
+llm:
+  # Proveedores compatibles con la API de OpenAI. api_key: valor fijo;
+  # api_key_env: nombre de la variable del .env que la contiene.
+  providers:
+    local:                                   # con este nombre se comprueba que el modelo esté descargado
+      base_url: http://localhost:1234/v1     # LM Studio
+      api_key: lm-studio                     # no se usa, pero es obligatorio
+      timeout: 300                           # los modelos locales pueden ser lentos
+      max_retries: 1
+      # Cómo se carga el modelo antes de usarlo (si no, LM Studio usa SUS valores: con 111k de
+      # contexto la VRAM se desborda y todo va 5 veces más lento). 16k sobra para un guion.
+      load: {context_length: 16384, gpu: max, parallel: 1}
+    openrouter:
+      base_url: https://openrouter.ai/api/v1
+      api_key_env: OPENROUTER_API_KEY
+      timeout: 120
+      max_retries: 3                         # los modelos gratis a veces devuelven 429/503
+
+  # Cada nodo hereda de `default` y sobrescribe lo que ponga.
+  # Admite cualquier opción del modelo (max_tokens, top_p...).
+  default:      {provider: local, model: qwen/qwen3.5-9b, temperature: 0.3}   # id de `lms ls`
+  angles:       {temperature: 0.9}           # 3 enfoques distintos: necesita creatividad (y es donde más
+                                             # se nota un modelo fuerte, como en write_script)
+  write_script: {temperature: 0.8}
+  review:       {temperature: 0.0}
+  beats:        {temperature: 0.4}           # corta la narración en fragmentos visuales y los describe
+  visuals:      {temperature: 0.0}           # elige entre candidatos MIRANDO las imágenes: necesita visión
+  # Para elegir mejor, un modelo más fuerte con visión solo en este nodo, p. ej.:
+  # visuals: {provider: openrouter, model: <modelo-con-visión>, temperature: 0.0}
+  # judge: {...}                             # juez de las evaluaciones (mejor uno más capaz)
+  # Si el guion no convence en local, cambiar solo este nodo:
+  # write_script: {provider: openrouter, model: <modelo-fuerte>, temperature: 0.8}
+  unload_after_text_phase: true              # lms unload --all al terminar la fase de texto
+
+voice:
+  # clone: cada escena con la voz de `reference` (Qwen3-TTS, local). La referencia sale de
+  #        scripts/design_voice.py (una voz diseñada) o de una grabación tuya de ~10 s.
+  # edge:  voz predefinida de Microsoft (solo PRUEBAS: no cumple la política de YouTube)
+  # record: grabas tú cada escena (pendiente)
+  mode: clone
+  reference: assets/voice_reference.wav
+  reference_text: assets/voice_reference.txt        # lo que se dice en reference (exacto)
+  clone:
+    python: .venv-tts/Scripts/python.exe            # entorno aparte con torch cu128 + qwen-tts
+    model: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    design_model: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
+    language: Spanish
+    seed: 1234                                      # mismo texto -> mismo audio
+    batch_size: 4
+  edge: {voice: es-ES-AlvaroNeural, rate: "+0%"}
+
+workers:
+  # Entorno con torch (cu128) + transformers donde corren Whisper y SigLIP 2 (src/tts_worker/)
+  python: .venv-tts/Scripts/python.exe
+
+align:
+  # Tiempo de cada palabra de la narración (para colocar las imágenes y, después, los subtítulos)
+  model: openai/whisper-large-v3-turbo
+  language: spanish
+
+visuals:
+  # Cada fragmento visual (nodo beats) tiene un tipo; sus fuentes, en orden. Si ninguna da un
+  # candidato que el modelo con visión puntúe >= min_score, el fragmento se GENERA (HiDream).
+  #   entity:   algo real con nombre propio (persona pública, institución, lugar...)  -> fuente pendiente
+  #   generic:  algo real pero genérico (gente, calles, objetos, acciones)
+  #   data:     una cifra o comparación                                              -> pendiente (gráficos)
+  #   source:   la noticia o el documento citado                                     -> pendiente (capturas)
+  #   abstract: una idea que no se puede filmar
+  sources:
+    entity: []
+    generic: [stock]
+    data: []
+    source: []
+    abstract: []
+  beat_seconds: {short: [2, 4], long: [3, 8]}   # duración pedida a cada fragmento
+  min_beat_seconds: 1.5       # uno más corto se une al anterior
+  max_candidates: 12          # candidatos por fragmento (sumando fuentes)
+  embed_model: google/siglip2-base-patch16-224  # primer filtro: parecido texto-imagen
+  top_k: 8                    # los mejores según SigLIP 2 que ve el modelo con visión
+  min_score: 6                # 0-10 del modelo con visión para usar un candidato
+  # Estilo común a las imágenes generadas (va al final de cada prompt, en inglés)
+  image_style: "documentary photograph, natural light, realistic, candid, 35mm lens, shallow depth of field"
+  # Fuente stock: bancos en orden de preferencia; uno sin clave en el .env se salta.
+  # Límites: Pixabay 100 búsquedas/min, Pexels 200/hora (2 búsquedas por fragmento).
+  stock_providers: [pexels, pixabay]
+  per_page: 6                 # resultados por búsqueda (vídeos y fotos)
+
+comfy:
+  # Generación de imágenes con HiDream-O1-Image (licencia MIT) en ComfyUI, instalado aparte
+  # en C:\Users\hexen\ComfyUI (su propio .venv). Arrancarlo antes del pipeline:
+  #   cd C:\Users\hexen\ComfyUI; .venv\Scripts\python.exe main.py --listen 127.0.0.1 --port 8188
+  url: http://127.0.0.1:8188
+  variant: dev                # dev (28 pasos, ~3x más rápido) | full (40 pasos, mejor calidad)
+  checkpoint: hidream_o1_image_dev_fp8_scaled.safetensors   # full: hidream_o1_image_fp8_scaled.safetensors
+  timeout: 900                # segundos máximos por imagen
+
+video:
+  # seconds: [mín, máx] de narración; el guion se pide para target_seconds.
+  # sections: [mín, máx] secciones del esquema (el guion se escribe sección a sección).
+  short:  {width: 1080, height: 1920, target_seconds: 55, seconds: [45, 60], scenes: [6, 10], sections: [3, 3]}
+  long:   {width: 1920, height: 1080, target_seconds: 630, seconds: [480, 780], scenes: [50, 80], sections: [6, 8]}
+  words_per_second: 2.5       # ritmo de narración en español (~150 palabras/min): fija la longitud del guion
+  fps: 30
+  loudness_lufs: -14
+  scene_gap: 0.15             # segundos de pausa tras la narración de cada escena
+  encoder: auto               # auto (h264_nvenc si hay GPU NVIDIA, si no libx264) | h264_nvenc | libx264
+  quality: 21                 # calidad constante del vídeo final (menor = mejor y más pesado)
+  font: Arial                 # texto en pantalla; se busca en fonts_dir y, si está vacía, en las del sistema
+  fonts_dir: assets/fonts
+
+research:
+  queries: 4                  # búsquedas de noticias que genera el LLM a partir del tema
+  results_per_query: 5
+  max_articles: {short: 3, long: 6}
+  max_article_chars: 6000     # ~1.700 tokens por artículo al extraer hechos
+  region: es-es               # solo DuckDuckGo; el buscador se elige con SEARCH_PROVIDER en el .env (tavily)
+
+review:
+  max_revisions: 2
+
+youtube:
+  privacy: private            # private | unlisted | scheduled
+  category_id: 28             # Science & Technology
+  default_language: es

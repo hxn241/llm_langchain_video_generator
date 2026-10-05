@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-news-video"
+version = "0.1.0"
+description = "Pipeline multiagente (LangGraph) que convierte noticias de tecnología e IA en vídeos narrados."
+readme = "README_proyecto_ai_2.md"
+requires-python = ">=3.10"
+dependencies = [
+    # llmkit / modules
+    "langchain>=1.0",              # create_agent + middleware; AIMessage.text as a property
+    "langchain-core>=1.0",
+    "langchain-openai>=1.0",       # LM Studio and OpenRouter speak the OpenAI protocol
+    "langchain-text-splitters",
+    "langgraph>=1.0",
+    "langgraph-checkpoint-sqlite>=2.0",   # SqliteSaver (threads) and SqliteStore (long-term memory)
+    "pydantic>=2",
+    "python-dotenv",
+    "pyyaml",                      # config.yaml
+    "requests",
+    "ddgs",                        # DuckDuckGo search (SEARCH_PROVIDER=duckduckgo)
+    "trafilatura",                 # the text of a news article, without menus or ads
+    # media
+    "imageio-ffmpeg",              # ffmpeg 7.1 inside the venv (h264_nvenc, loudnorm, sidechaincompress, ass)
+    "edge-tts>=7",                 # voice.mode=edge (predefined voices, for tests)
+    "pillow",                      # contact sheets of stock thumbnails for the vision model; thumbnails
+]
+
+[project.optional-dependencies]
+chroma = ["langchain-chroma"]                                        # VECTOR_STORE=chroma
+pdf = ["pypdf"]                                                      # .pdf documents
+local-embeddings = ["langchain-huggingface", "sentence-transformers"]  # EMBEDDING_PROVIDER=local
+semantic-store = ["sqlite-vec"]                                      # search by meaning in store_in_sqlite
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+exclude = ["tts_worker*"]          # runs with .venv-tts (torch), not part of this package
+
+[tool.setuptools.package-data]
+prompts = ["*.md"]
