@@ -5,7 +5,8 @@ repeats itself or loses the thread. Each section is written on its own, seeing
 the whole outline, its own facts and how the previous section ended.
 
 - Each section's words come from the outline (lengths.assign_words) and its scenes
-  from the format. If a section misses them, it is asked ONCE more with the numbers.
+  from the format. If a section misses them, or a scene repeats an expression (or the
+  on-screen text) of the scene before it, it is asked ONCE more saying what to fix.
 - With review_feedback (from the review node) each section is rewritten from its
   previous version applying it.
 - The sources are the articles of the research: the LLM never writes them.
@@ -13,6 +14,7 @@ the whole outline, its own facts and how the previous section ended.
 import json
 
 from graph.lengths import length_problems, length_targets, section_targets
+from graph.nodes.align import normalize
 from graph.script_files import ROLE_LABELS
 from graph.state import Outline, Script, SectionDraft
 from prompts import load_prompt
@@ -62,6 +64,30 @@ def section_request(state, outline, number, targets, facts, video_format, before
     return "\n".join(parts)
 
 
+def trigrams(text):
+    """Groups of 3 consecutive words with at least 2 content words (4+ letters): 'fotónica de
+    silicio' counts, 'de la vivienda' does not (too common to be a repetition worth fixing)."""
+    words = [w for w in (normalize(w) for w in text.split()) if w]
+    return {" ".join(g) for g in zip(words, words[1:], words[2:]) if sum(len(w) >= 4 for w in g) >= 2}
+
+
+def repetition_problems(scenes, before=None):
+    """What a scene repeats from the one just before it (the first one, from the end of the previous
+    section): the same expression, or the same on-screen text."""
+    problems = []
+    chain = ([before[-1]] if before else []) + list(scenes)
+    for previous, scene in zip(chain, chain[1:]):
+        repeated = trigrams(previous.narration) & trigrams(scene.narration)
+        if repeated:
+            problems.append(f"\"{scene.narration[:60]}...\" repite \"{sorted(repeated)[0]}\" de la escena "
+                            "anterior: refiérete a ello de otra forma (sinónimo, pronombre, descripción o "
+                            "metáfora) o cuenta algo nuevo")
+        if scene.on_screen_text and scene.on_screen_text == previous.on_screen_text:
+            problems.append(f"El texto en pantalla \"{scene.on_screen_text}\" es el mismo que en la escena "
+                            "anterior: cámbialo o déjalo en null")
+    return problems
+
+
 def make_write_script(hub, settings=None):
     """The node, bound to an LLMHub (its model for this node comes from config.yaml: llm.write_script)."""
     settings = settings or load_settings()
@@ -85,12 +111,15 @@ def make_write_script(hub, settings=None):
                 return generate.invoke({"text": section_request(state, outline, number, goal, facts, video_format,
                                                                 before, previous, feedback)}).scenes
 
+            def check(scenes):
+                return (length_problems(sum(len(s.narration.split()) for s in scenes), len(scenes), goal,
+                                        f"La sección {number}") + repetition_problems(scenes, before))
+
             scenes = write(previous, feedback)
-            where = f"La sección {number}"
-            problems = length_problems(sum(len(s.narration.split()) for s in scenes), len(scenes), goal, where)
-            if problems:                                               # one retry with the exact numbers
+            problems = check(scenes)
+            if problems:                                    # one retry, saying exactly what to fix
                 scenes = write(scenes, "\n".join(problems))
-                problems = length_problems(sum(len(s.narration.split()) for s in scenes), len(scenes), goal, where)
+                problems = check(scenes)
             sections.append(scenes)
             warnings += problems
 

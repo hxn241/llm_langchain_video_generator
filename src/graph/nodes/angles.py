@@ -53,9 +53,10 @@ def make_angles(hub, settings=None):
         previous = AnglesDraft.model_validate(state["angles"]) if feedback and state.get("angles") else None
         draft = generate.invoke({"text": angles_request(state, targets["seconds"], feedback, previous)})
         n_facts = len(state["facts"])
-        draft = draft.model_copy(update={"angles": [a.model_copy(update={"facts": sorted({f for f in a.facts
-                                                                                          if 1 <= f <= n_facts})})
-                                                    for a in draft.angles]})
+        draft = draft.model_copy(update={
+            "angles": [a.model_copy(update={"facts": sorted({f for f in a.facts if 1 <= f <= n_facts})})
+                       for a in draft.angles],
+            "best": draft.angles.index(draft.recommended()) + 1})      # e.g. 0 (counted from 0) -> 1
         save_angles(draft, runs_dir(_run_id(state, config)))
         return {"angles": draft.model_dump(), "angle_feedback": ""}
 

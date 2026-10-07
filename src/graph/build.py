@@ -2,6 +2,8 @@
 
     research -> angles -> choose_angle ⏸ -> outline -> approve_outline ⏸ -> write_script -> unload_llm
                   ^_ rejected, with your reason _|      ^____ rejected, with your reason ____|
+                                                          (--manual: -> manual_script ⏸, your script
+                                                           and visuals in <run>/manual/ -> unload_llm)
         -> voice -> align -> beats -> visuals -> assemble -> END
 
     text phase (LLM):  research, angles, outline, write_script
@@ -16,6 +18,7 @@ from graph.nodes.align import make_align
 from graph.nodes.angles import make_angles, make_choose_angle
 from graph.nodes.assemble import make_assemble
 from graph.nodes.beats import make_beats
+from graph.nodes.manual_script import make_manual_script
 from graph.nodes.outline import make_approve_outline, make_outline
 from graph.nodes.research import make_research
 from graph.nodes.unload_llm import unload_llm
@@ -38,6 +41,7 @@ def build_graph(hub, settings=None):
     graph.add_node("outline", make_outline(hub, settings))
     graph.add_node("approve_outline", make_approve_outline(settings))   # routes with Command
     graph.add_node("write_script", make_write_script(hub, settings))
+    graph.add_node("manual_script", make_manual_script(settings))      # routes with Command
     graph.add_node("unload_llm", unload_llm)            # text phase -> media phase (VRAM)
     graph.add_node("voice", make_voice(settings))
     graph.add_node("align", make_align(settings))       # Whisper: the time of every word

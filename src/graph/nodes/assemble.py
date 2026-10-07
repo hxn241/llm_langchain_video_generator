@@ -7,7 +7,8 @@
    - video: black bars burned into the clip are removed, then it is cropped to fill the
      frame. If it is shorter than the beat it is slowed down
      (at most MAX_SLOWDOWN) and its last frame is held for the rest.
-   - photo / generated image: slow zoom (Ken Burns), alternating in and out.
+   - photo / generated image: slow zoom (Ken Burns), alternating in and out, made frame by
+     frame in Python at sub-pixel positions (ffmpeg's zoompan jitters) and piped to ffmpeg.
    - none:  a plain dark background.
    Runs made before beats existed: one beat per scene (visuals keyed by scene id).
 2. The segments are joined without re-encoding; the scene WAVs are joined padded with
@@ -21,14 +22,15 @@ music with ducking, word-by-word subtitles (the subtitles node will set subtitle
 import os
 from pathlib import Path
 
+from PIL import Image, ImageOps
+
 from graph.state import Script
 from llmkit.config import BASE
 from services import ass, media
 from services.settings import load_settings, runs_dir
 
 MAX_SLOWDOWN = 1.5          # a short clip may play this much slower before its last frame is held
-ZOOM = 0.10                 # Ken Burns: the photo grows (or shrinks) 10 % over the scene
-SUPERSAMPLE = 2             # zoompan rounds to whole pixels: zooming a bigger image hides the jitter
+ZOOM = 0.10                 # Ken Burns: the photo grows (or shrinks) 10 % over the beat
 BACKGROUND = "0x14181F"     # kind "none"
 SEGMENT_QUALITY = 16        # intermediate segments: near lossless (they are encoded twice)
 
@@ -53,8 +55,9 @@ def beat_frames(beats, scene_ids, frames, fps):
     return out
 
 
-def segment_args(visual, width, height, fps, frames, zoom_in=True):
-    """ffmpeg input + filter arguments for one beat's segment (without the output part)."""
+def segment_args(visual, width, height, fps, frames):
+    """ffmpeg input + filter arguments for a video or empty segment (without the output part).
+    Photos are made frame by frame instead (ken_burns)."""
     seconds = frames / fps
     if visual["kind"] == "video":
         clip = media.media_duration(visual["path"])
@@ -66,14 +69,24 @@ def segment_args(visual, width, height, fps, frames, zoom_in=True):
               f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,"
               f"crop={width}:{height},setsar=1,tpad=stop_mode=clone:stop_duration={seconds:.3f}")
         return ["-ss", f"{start:.3f}", "-i", visual["path"], "-vf", vf, "-an"]
-    if visual["kind"] in ("photo", "generated"):
-        big_w, big_h = width * SUPERSAMPLE, height * SUPERSAMPLE
-        zoom = f"1+{ZOOM}*on/{frames}" if zoom_in else f"{1 + ZOOM}-{ZOOM}*on/{frames}"
-        vf = (f"scale={big_w}:{big_h}:force_original_aspect_ratio=increase:flags=lanczos,crop={big_w}:{big_h},"
-              f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={width}x{height}:fps={fps},"
-              "setsar=1")
-        return ["-i", visual["path"], "-vf", vf]
     return ["-f", "lavfi", "-i", f"color=c={BACKGROUND}:s={width}x{height}:r={fps}"]
+
+
+def ken_burns(path, width, height, frames, zoom_in=True):
+    """The frames of a slow zoom on a photo (PIL images). Each frame is cut at sub-pixel positions
+    and interpolated, so the zoom is smooth (ffmpeg's zoompan rounds to whole pixels: it jitters).
+    The photo is first resized (Lanczos) to the frame plus the zoom, so every frame is scaled by
+    less than 1 + ZOOM: no shimmer from shrinking a big image without filtering."""
+    image = ImageOps.fit(Image.open(path).convert("RGB"),
+                         (round(width * (1 + ZOOM)), round(height * (1 + ZOOM))), Image.Resampling.LANCZOS)
+    big_w, big_h = image.size
+    for n in range(frames):
+        t = n / max(1, frames - 1)
+        t = t * t * (3 - 2 * t)                          # smoothstep: starts and ends gently
+        zoom = 1 + ZOOM * (t if zoom_in else 1 - t)       # 1 = the whole image, 1 + ZOOM = the frame at 1:1
+        w, h = big_w / zoom, big_h / zoom
+        box = ((big_w - w) / 2, (big_h - h) / 2, (big_w + w) / 2, (big_h + h) / 2)
+        yield image.transform((width, height), Image.Transform.EXTENT, box, Image.Resampling.BICUBIC)
 
 
 def overlay_document(script, starts, lengths, width, height, font):
@@ -132,8 +145,12 @@ def make_assemble(settings=None):
         for n, (beat, count) in enumerate(timeline, start=1):
             visual = visuals.get(beat["id"]) or {"kind": "none", "path": ""}
             path = segments_dir / f"beat_{beat['id']:03d}.mp4"
-            media.ffmpeg(*segment_args(visual, width, height, fps, count, zoom_in=n % 2 == 1),
-                         "-frames:v", count, *media.encode_args(SEGMENT_QUALITY, fps, encoder), path)
+            output = ["-frames:v", count, *media.encode_args(SEGMENT_QUALITY, fps, encoder), path]
+            if visual["kind"] in ("photo", "generated"):
+                media.ffmpeg_frames(ken_burns(visual["path"], width, height, count, zoom_in=n % 2 == 1),
+                                    width, height, fps, *output)
+            else:
+                media.ffmpeg(*segment_args(visual, width, height, fps, count), *output)
             segments.append(path)
             print(f"  · assemble: {n}/{len(timeline)} escena {beat['scene']} ({visual['kind']}, {count / fps:.1f} s)")
 

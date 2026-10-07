@@ -65,7 +65,7 @@ class Angle(BaseModel):
 class AnglesDraft(BaseModel):
     angles: list[Angle] = Field(min_length=3, max_length=3, description="Tres enfoques DISTINTOS entre sí")
     reason: str = Field(description="Cuál de los tres es el más fuerte y por qué, en 1-2 frases")
-    best: int = Field(description="Número (1-3) del enfoque más fuerte")
+    best: int = Field(description="Número del enfoque más fuerte: 1, 2 o 3 (se cuenta desde 1, no desde 0)")
 
     def recommended(self):
         """The recommended angle (an out-of-range best, from the model or a hand edit, means the first)."""
@@ -155,7 +155,9 @@ class BeatDraft(BaseModel):
                                        "cita; abstract = una idea que no se puede filmar")
     subject: str = Field(description="Qué se ve, en español, concreto (p. ej. 'sede del Banco de España en Madrid', "
                                      "'pareja joven revisando facturas en la cocina')")
-    query: str = Field(description="Búsqueda en INGLÉS, 2-6 palabras concretas, para bancos de imágenes y vídeo")
+    queries: list[str] = Field(min_length=1, max_length=3,
+                               description="2-3 búsquedas en INGLÉS para bancos de vídeo y fotos, de la más concreta "
+                                           "a la más genérica: 1-3 sustantivos de lo que se VE en el plano")
     prompt: str = Field(description="Prompt en INGLÉS para generar la imagen si no se encuentra una buena: "
                                     "40-80 palabras, sujeto, acción, lugar, luz, encuadre, terminado con el estilo")
 
@@ -178,7 +180,7 @@ class Beat(TypedDict):
     text: str                 # the words it covers
     kind: str                 # BeatKind
     subject: str
-    query: str
+    queries: list[str]        # stock searches, most concrete first (old beats.json: "query", one string)
     prompt: str
 
 
@@ -223,6 +225,8 @@ class VideoState(TypedDict, total=False):
     topic: str                            # what the video is about (given by you)
     notes: str                            # your angle / opinion / what to stress (optional)
     urls: list[str]                       # articles you want used (optional)
+    manual: bool                          # --manual: you write the script and bring the visuals
+    manual_visuals: dict[int, list[dict]] # manual: scene id -> your marks [{"word", "path"}] (graph/manual.py)
     sources: list[Source]                 # articles the research read
     facts: list[Fact]                     # the ONLY data the script may use
     angles: dict                          # AnglesDraft.model_dump(): the 3 proposed angles

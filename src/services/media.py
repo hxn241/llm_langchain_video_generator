@@ -24,6 +24,25 @@ def ffmpeg(*args, cwd=None):
     return result.stderr
 
 
+def ffmpeg_frames(frames, width, height, fps, *output_args):
+    """Encodes frames made in Python (PIL images or raw RGB bytes, width x height) with ffmpeg:
+    for motion ffmpeg's filters cannot make smooth (zoompan moves in whole pixels and jitters)."""
+    process = subprocess.Popen([FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                                "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width}x{height}", "-r", str(fps),
+                                "-i", "-", *map(str, output_args)],
+                               stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        for frame in frames:
+            process.stdin.write(frame if isinstance(frame, bytes) else frame.tobytes())
+    except BrokenPipeError:
+        pass                                            # ffmpeg stopped: its error is read below
+    finally:
+        process.stdin.close()
+    error = process.stderr.read().decode("utf-8", "replace")
+    if process.wait() != 0:
+        raise RuntimeError(f"ffmpeg failed ({process.returncode}):\n{error[-1500:]}")
+
+
 def media_duration(path):
     """Seconds of any audio/video file, read from ffmpeg's report (imageio-ffmpeg has no ffprobe)."""
     result = subprocess.run([FFMPEG, "-hide_banner", "-nostdin", "-i", str(path)],

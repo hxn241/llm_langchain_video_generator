@@ -11,6 +11,13 @@ It stops twice before writing:
      [n] three new ones (with your reason). angles.json can be edited before approving.
   2. the outline: you read it (and may edit outline.json), then approve it or reject it with a reason.
 --yes approves both on its own (tests).
+
+    python scripts/run_pipeline.py --topic "..." --manual       # you write the script, you bring the visuals
+
+--manual: after the outline it pauses a third time with <run>/manual/ ready: guion.md (your script,
+with [file.jpg] marks where your images/videos go) and visuales/ (the files). See src/graph/manual.py.
+In a manual run, --redo reads guion.md again: replaced files -> --redo visuals; changed marks
+-> --redo beats; changed narration -> --redo voice.
 --redo (voice | align | beats | visuals | assemble) runs that node again and the ones after
 it, also on a finished run (e.g. one made before that node existed).
 
@@ -20,6 +27,7 @@ and its files go to <STATE_DIR>/runs/<run_id>/.
 import argparse
 from datetime import datetime
 
+from graph import manual
 from graph.build import REDO_AFTER, build_graph
 from graph.script_files import save_script
 from graph.state import Script
@@ -41,12 +49,35 @@ def parse_args():
     parser.add_argument("--redo", choices=sorted(REDO_AFTER), help="with --resume: run this node again "
                                                                        "and the ones after it")
     parser.add_argument("--yes", action="store_true", help="approve the angle and the outline without asking")
+    parser.add_argument("--manual", action="store_true", help="you write the script and bring the images/videos "
+                                                              "(after the outline it pauses: see <run>/manual/)")
     args = parser.parse_args()
     if not args.topic and not args.resume:
         parser.error("--topic is required (or --resume RUN_ID)")
+    if args.manual and args.resume:
+        parser.error("--manual is chosen when the run starts (a resumed run keeps its mode)")
     if args.redo and not args.resume:
         parser.error("--redo needs --resume RUN_ID")
     return args
+
+
+def manual_update(values, run_id, redo):
+    """Manual run + --redo: guion.md is read again (your changes count). Changed narration needs a
+    new voice (--redo voice); changed marks need new beats (--redo beats or earlier)."""
+    problems = manual.fetch(runs_dir(run_id))                    # media_escenas.json may have changed
+    script, marks, more = manual.parse(runs_dir(run_id), [s["url"] for s in values.get("sources", [])])
+    problems += [p for p in more if p not in problems]
+    if problems:
+        raise SystemExit("El guion tiene problemas:\n" + "\n".join(f"  - {p}" for p in problems))
+    order = list(REDO_AFTER)                                    # voice, align, beats, visuals, assemble
+    if ([s.narration for s in script.scenes] != [s["narration"] for s in values["script"]["scenes"]]
+            and order.index(redo) > order.index("voice")):
+        raise SystemExit("Has cambiado la narración de guion.md: la voz ya no coincide. Usa --redo voice")
+    old_marks = {int(k): v for k, v in (values.get("manual_visuals") or {}).items()}
+    if marks != old_marks and order.index(redo) > order.index("beats"):
+        raise SystemExit("Has cambiado las marcas [archivo] de guion.md: usa --redo beats")
+    save_script(script, runs_dir(run_id))
+    return {"script": script.model_dump(), "manual_visuals": marks}
 
 
 def main():
@@ -65,7 +96,8 @@ def main():
             missing = [k for k in REDO_NEEDS[args.redo] if not values.get(k)]
             if missing:
                 raise SystemExit(f"Run {run_id!r} has no {', '.join(missing)} yet: it cannot redo {args.redo}")
-            app.update_state(thread, {}, as_node=REDO_AFTER[args.redo])   # the graph goes on from there
+            update = manual_update(values, run_id, args.redo) if values.get("manual") else {}
+            app.update_state(thread, update, as_node=REDO_AFTER[args.redo])   # the graph goes on from there
         elif not app.get_state(thread).next:
             raise SystemExit(f"Run {run_id!r} already finished: nothing to resume (use --redo NODE)")
         state = hub.run(app, None, thread=run_id, approve=approve, verbose=True)
@@ -74,7 +106,7 @@ def main():
         video_format = args.format or load_settings().get("format", "long")
         print(f"Run {run_id} · {video_format} · {args.topic}")
         state = hub.run(app, {"run_id": run_id, "format": video_format, "topic": args.topic,
-                              "notes": args.notes, "urls": args.url},
+                              "notes": args.notes, "urls": args.url, "manual": args.manual},
                         thread=run_id, approve=approve, verbose=True)
 
     folder = runs_dir(run_id)

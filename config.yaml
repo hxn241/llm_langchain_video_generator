@@ -12,6 +12,9 @@ llm:
       max_retries: 1
       # Cómo se carga el modelo antes de usarlo (si no, LM Studio usa SUS valores: con 111k de
       # contexto la VRAM se desborda y todo va 5 veces más lento). 16k sobra para un guion.
+      # gpu: parte del modelo en la GPU (max = todo). Un modelo que no cabe en los 12 GB (p. ej.
+      # Qwen3.6 35B-A3B, ~21,7 GB) necesita una fracción (0.45), pero con 32 GB de RAM va al límite
+      # y las peticiones caducan. Comprobar con: lms load <modelo> --estimate-only -c 16384 --gpu max
       load: {context_length: 16384, gpu: max, parallel: 1}
     openrouter:
       base_url: https://openrouter.ai/api/v1
@@ -21,7 +24,8 @@ llm:
 
   # Cada nodo hereda de `default` y sobrescribe lo que ponga.
   # Admite cualquier opción del modelo (max_tokens, top_p...).
-  default:      {provider: local, model: qwen/qwen3.5-9b, temperature: 0.3}   # id de `lms ls`
+  default:      {provider: local, model: google/gemma-4-12b, temperature: 0.3}   # id de `lms ls`
+                                             # (con visión, ~9,7 GB: cabe entero en la GPU; antes qwen/qwen3.5-9b)
   angles:       {temperature: 0.9}           # 3 enfoques distintos: necesita creatividad (y es donde más
                                              # se nota un modelo fuerte, como en write_script)
   write_script: {temperature: 0.8}
@@ -64,27 +68,32 @@ align:
 visuals:
   # Cada fragmento visual (nodo beats) tiene un tipo; sus fuentes, en orden. Si ninguna da un
   # candidato que el modelo con visión puntúe >= min_score, el fragmento se GENERA (HiDream).
-  #   entity:   algo real con nombre propio (persona pública, institución, lugar...)  -> fuente pendiente
+  #   entity:   algo real con nombre propio (persona pública, institución, lugar...)  -> pendiente: Wikimedia
   #   generic:  algo real pero genérico (gente, calles, objetos, acciones)
-  #   data:     una cifra o comparación                                              -> pendiente (gráficos)
-  #   source:   la noticia o el documento citado                                     -> pendiente (capturas)
-  #   abstract: una idea que no se puede filmar
+  #   data:     una cifra o comparación                                              -> pendiente: gráficos
+  #   source:   la noticia o el documento citado                                     -> pendiente: capturas
+  #   abstract: una idea que no se puede filmar (en stock, una metáfora visual)
+  # Mientras no estén sus fuentes propias, todos buscan en stock: el modelo con visión descarta
+  # lo que no encaje y entonces se genera.
   sources:
-    entity: []
+    entity: [stock]
     generic: [stock]
-    data: []
-    source: []
-    abstract: []
-  beat_seconds: {short: [2, 4], long: [3, 8]}   # duración pedida a cada fragmento
+    data: [stock]
+    source: [stock]
+    abstract: [stock]
+  beat_seconds: {short: [2, 4], long: [3, 6]}   # duración de cada plano; uno más largo (+20 %) se parte
   min_beat_seconds: 1.5       # uno más corto se une al anterior
-  max_candidates: 12          # candidatos por fragmento (sumando fuentes)
+  max_candidates: 16          # candidatos por fragmento (sumando fuentes y búsquedas)
   embed_model: google/siglip2-base-patch16-224  # primer filtro: parecido texto-imagen
   top_k: 8                    # los mejores según SigLIP 2 que ve el modelo con visión
-  min_score: 6                # 0-10 del modelo con visión para usar un candidato
+  min_score: 5                # 0-10 del modelo con visión para usar un candidato. Bajo a propósito:
+                              # un plano real "del tema" queda mejor que una imagen generada
   # Estilo común a las imágenes generadas (va al final de cada prompt, en inglés)
   image_style: "documentary photograph, natural light, realistic, candid, 35mm lens, shallow depth of field"
   # Fuente stock: bancos en orden de preferencia; uno sin clave en el .env se salta.
-  # Límites: Pixabay 100 búsquedas/min, Pexels 200/hora (2 búsquedas por fragmento).
+  # Límites: Pixabay 100 búsquedas/min, Pexels 200/hora (hasta 6 búsquedas por fragmento: 3
+  # consultas x vídeo/foto; las repetidas salen de la caché). Para un vídeo largo, Pexels sube
+  # el límite gratis si se lo pides (help.pexels.com); si no, el pipeline espera al llegar al 429.
   stock_providers: [pexels, pixabay]
   per_page: 6                 # resultados por búsqueda (vídeos y fotos)
 

@@ -74,8 +74,9 @@ def _pixabay(query, kind, orientation, per_page):
     params = {"key": os.environ[KEYS["pixabay"]], "q": query[:100], "per_page": max(3, per_page),
               "safesearch": "true"}
     if kind == "video":
-        # No orientation filter for videos: the frame crop and the choice take care of it
-        data = _get("https://pixabay.com/api/videos/", params)
+        # No orientation filter for videos: the frame crop and the choice take care of it.
+        # Only filmed footage: "animation" is mostly cheap motion graphics and green screens.
+        data = _get("https://pixabay.com/api/videos/", params | {"video_type": "film"})
         return [{"provider": "pixabay", "id": h["id"], "kind": "video", "page_url": h["pageURL"],
                  "author": h.get("user", ""), "duration": h["duration"],
                  "width": h["videos"]["medium"]["width"] or h["videos"]["small"]["width"],
@@ -109,7 +110,7 @@ def search(query, kind, orientation, providers, per_page=10):
             print(f"  · {provider}: search failed ({query!r}, {kind}): {e}")
     for r in results:            # sizes are needed to choose: a rendition without them is useless
         r["renditions"] = [x for x in r["renditions"] if x.get("width") and x.get("height")]
-    return [r for r in results if r["renditions"] and r.get("thumb")]
+    return [r for r in results if r["renditions"] and r.get("thumb") and not r["ai_generated"]]
 
 
 # --------------------------------------------------------------- download

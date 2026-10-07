@@ -6,6 +6,7 @@ outline: chosen angle + facts -> title, guiding question and sections (each with
          Saved as <run>/outline.md (to read) and <run>/outline.json (to edit).
 approve_outline: pauses the graph.
          approve -> outline.json is read again (your edits count) -> write_script
+                    (manual mode: -> manual_script, you write it)
          reject  -> back to outline with your reason as feedback
 """
 from typing import Literal
@@ -88,7 +89,7 @@ def make_outline(hub, settings=None):
 def make_approve_outline(settings=None):
     settings = settings or load_settings()
 
-    def approve_outline(state, config) -> Command[Literal["outline", "write_script"]]:
+    def approve_outline(state, config) -> Command[Literal["outline", "write_script", "manual_script"]]:
         # Nothing with side effects before ask_approval: on resume this node runs again from the start
         folder = runs_dir(_run_id(state, config))
         decision = ask_approval(
@@ -104,6 +105,7 @@ def make_approve_outline(settings=None):
         words = assign_words(len(edited.sections), targets["words"])  # sections added/removed: rebalance
         edited = edited.model_copy(update={"sections": [s.model_copy(update={"words": w})
                                                         for s, w in zip(edited.sections, words)]})
-        return Command(goto="write_script", update={"outline": edited.model_dump()})
+        return Command(goto="manual_script" if state.get("manual") else "write_script",
+                       update={"outline": edited.model_dump()})
 
     return approve_outline
