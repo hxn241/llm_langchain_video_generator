@@ -1,4 +1,4 @@
-"""ComfyUI over HTTP: image generation (HiDream-O1-Image) for scenes without good stock.
+"""ComfyUI over HTTP: image generation (Z-Image Turbo) for scenes without good stock.
 
 ComfyUI runs on its own (its own folder and venv, see README) and this talks to its API:
     POST /prompt (a workflow in API format) -> poll /history/<id> -> GET /view (the image)
@@ -6,9 +6,12 @@ ComfyUI runs on its own (its own folder and venv, see README) and this talks to 
 
     path = generate("Crowd marching in a Madrid street...", "out.png", width=1440, height=2560)
 
-config.yaml, section `comfy`: url, checkpoint, variant (dev | full), steps...
+config.yaml, section `comfy`: url, model, text_encoder, vae, steps, megapixels...
+The models go in ComfyUI/models/ (diffusion_models/, text_encoders/, vae/), from
+huggingface.co/Comfy-Org/z_image_turbo (split_files/).
 """
 import json
+import math
 import random
 import time
 import uuid
@@ -18,15 +21,11 @@ import requests
 
 from services.settings import load_settings
 
-# Resolutions HiDream-O1 was trained on (ComfyUI's template): one per aspect ratio
-TRAINED_SIZES = [(2048, 2048), (2304, 1728), (2304, 1792), (2496, 1664), (2560, 1440), (3104, 1312),
-                 (1728, 2304), (1792, 2304), (1664, 2496), (1440, 2560), (1312, 3104)]
-
-# The two variants, as in ComfyUI's templates (image_hidream_o1_dev / image_hidream_o1)
-VARIANTS = {
-    "dev":  {"steps": 28, "cfg": 1.0, "noise_scale": 7.6, "sampler": "lcm"},
-    "full": {"steps": 40, "cfg": 5.0, "noise_scale": 8.0, "sampler": "dpmpp_2m_sde_gpu", "seam_smoothing": True},
-}
+# As in ComfyUI's template (image_z_image_turbo): a distilled model, few steps and no CFG
+Z_IMAGE = {"model": "z_image_turbo_bf16.safetensors", "text_encoder": "qwen_3_4b.safetensors",
+           "vae": "ae.safetensors", "steps": 8, "cfg": 1.0, "shift": 3.0,
+           "sampler": "res_multistep", "scheduler": "simple"}
+SIZE_STEP = 32            # width and height are multiples of this
 
 
 def options(settings=None):
@@ -44,42 +43,32 @@ def running(settings=None):
         return False
 
 
-def trained_size(width, height):
-    """The trained resolution closest to the frame's aspect ratio (the image is then scaled to the frame)."""
-    ratio = width / height
-    return min(TRAINED_SIZES, key=lambda s: abs(s[0] / s[1] - ratio))
+def generation_size(width, height, megapixels):
+    """The frame's aspect ratio at about `megapixels` (the image is then scaled to the frame)."""
+    scale = math.sqrt(megapixels * 1e6 / (width * height))
+    return (max(SIZE_STEP, round(width * scale / SIZE_STEP) * SIZE_STEP),
+            max(SIZE_STEP, round(height * scale / SIZE_STEP) * SIZE_STEP))
 
 
-def hidream_workflow(prompt, width, height, seed, checkpoint, variant="dev", steps=None, negative=""):
-    """Text-to-image with HiDream-O1-Image, in ComfyUI's API format (node id -> class + inputs)."""
-    v = VARIANTS[variant]
-    model = ["noise", 0]
-    nodes = {
-        "ckpt": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": checkpoint}},
-        "noise": {"class_type": "ModelNoiseScale", "inputs": {"model": ["ckpt", 0], "noise_scale": v["noise_scale"]}},
-        "pos": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["ckpt", 1], "text": prompt}},
-        "neg": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["ckpt", 1], "text": negative}},
-        "latent": {"class_type": "EmptyHiDreamO1LatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
-    }
-    if v.get("seam_smoothing"):
-        nodes["seam"] = {"class_type": "HiDreamO1PatchSeamSmoothing",
-                         "inputs": {"model": model, "start_percent": 0.8, "end_percent": 1.0, "pattern": "single_shift",
-                                    "passes": "ramp_2_4", "blend": "median", "strength": 1.0}}
-        model = ["seam", 0]
-    if v["sampler"] == "lcm":
-        nodes["sampler"] = {"class_type": "SamplerLCM", "inputs": {"s_noise": 1.0, "s_noise_end": 1.0, "noise_clip_std": 2.5}}
-    else:
-        nodes["sampler"] = {"class_type": "KSamplerSelect", "inputs": {"sampler_name": v["sampler"]}}
-    nodes |= {
-        "sigmas": {"class_type": "BasicScheduler", "inputs": {"model": model, "scheduler": "normal",
-                                                              "steps": steps or v["steps"], "denoise": 1.0}},
-        "sample": {"class_type": "SamplerCustom", "inputs": {
-            "model": model, "add_noise": True, "noise_seed": seed, "cfg": v["cfg"], "positive": ["pos", 0],
-            "negative": ["neg", 0], "sampler": ["sampler", 0], "sigmas": ["sigmas", 0], "latent_image": ["latent", 0]}},
-        "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["ckpt", 2]}},
+def z_image_workflow(prompt, width, height, seed, o):
+    """Text-to-image with Z-Image Turbo, in ComfyUI's API format (node id -> class + inputs).
+    `o`: Z_IMAGE with config.yaml's comfy section on top."""
+    return {
+        "unet": {"class_type": "UNETLoader", "inputs": {"unet_name": o["model"], "weight_dtype": "default"}},
+        "shift": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["unet", 0], "shift": o["shift"]}},
+        "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": o["text_encoder"], "type": "lumina2",
+                                                        "device": "default"}},
+        "vae": {"class_type": "VAELoader", "inputs": {"vae_name": o["vae"]}},
+        "pos": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["clip", 0], "text": prompt}},
+        "neg": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["pos", 0]}},   # no CFG: no negative
+        "latent": {"class_type": "EmptySD3LatentImage", "inputs": {"width": width, "height": height, "batch_size": 1}},
+        "sample": {"class_type": "KSampler", "inputs": {
+            "model": ["shift", 0], "seed": seed, "steps": o["steps"], "cfg": o["cfg"], "sampler_name": o["sampler"],
+            "scheduler": o["scheduler"], "positive": ["pos", 0], "negative": ["neg", 0],
+            "latent_image": ["latent", 0], "denoise": 1.0}},
+        "decode": {"class_type": "VAEDecode", "inputs": {"samples": ["sample", 0], "vae": ["vae", 0]}},
         "save": {"class_type": "SaveImage", "inputs": {"images": ["decode", 0], "filename_prefix": "llm_video"}},
     }
-    return nodes
 
 
 def run(workflow, timeout=900, settings=None):
@@ -107,12 +96,10 @@ def run(workflow, timeout=900, settings=None):
 
 
 def generate(prompt, dst, width, height, seed=None, settings=None):
-    """prompt (English) -> an image at the trained size closest to width:height, saved to dst."""
-    o = options(settings)
-    w, h = trained_size(width, height)
-    workflow = hidream_workflow(prompt, w, h, seed if seed is not None else random.randrange(2**32),
-                                o.get("checkpoint", "hidream_o1_image_dev_fp8_scaled.safetensors"),
-                                o.get("variant", "dev"), o.get("steps"))
+    """prompt (English) -> an image with the frame's aspect ratio (width:height), saved to dst."""
+    o = Z_IMAGE | options(settings)
+    w, h = generation_size(width, height, o.get("megapixels", 2.0))
+    workflow = z_image_workflow(prompt, w, h, seed if seed is not None else random.randrange(2**32), o)
     Path(dst).write_bytes(run(workflow, o.get("timeout", 900), settings))
     return Path(dst)
 

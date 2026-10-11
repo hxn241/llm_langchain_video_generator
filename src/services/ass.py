@@ -1,6 +1,6 @@
 """ASS files (Advanced SubStation): text burned onto the video with ffmpeg's `ass` filter (libass).
 
-Used for the on-screen text of each scene (assemble) and, later, the word-by-word subtitles.
+Used for the on-screen text of each scene (assemble) and the word-by-word subtitles (graph/subtitles.py).
 
     style(name, font, size, ...)  one line of [V4+ Styles]
     document(width, height, styles, events)
@@ -18,6 +18,11 @@ TOP, MIDDLE, BOTTOM = 8, 5, 2
 def colour(rgb="FFFFFF", alpha=0):
     """'RRGGBB' + opacity loss (0 = opaque, 255 = invisible) -> ASS &HAABBGGRR."""
     return f"&H{alpha:02X}{rgb[4:6]}{rgb[2:4]}{rgb[0:2]}".upper()
+
+
+def inline_colour(rgb="FFFFFF"):
+    """'RRGGBB' -> the colour of an override tag ({\\1c&HBBGGRR&}): the text changes colour mid-line."""
+    return f"&H{rgb[4:6]}{rgb[2:4]}{rgb[0:2]}&".upper()
 
 
 def style(name, font, size, text=colour(), outline_colour=colour("000000"), back=colour("000000", 128),

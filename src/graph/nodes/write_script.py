@@ -9,11 +9,15 @@ the whole outline, its own facts and how the previous section ended.
   on-screen text) of the scene before it, it is asked ONCE more saying what to fix.
 - With review_feedback (from the review node) each section is rewritten from its
   previous version applying it.
+- Each section sees the facts the sections before it already told (not to tell them again), and
+  in long videos the last one sees how the video started (to close coming back to it).
+- The video's total length is the outline's: after deep_research a long video with less
+  material plans fewer words (lengths.planned_targets), and it is checked against that.
 - The sources are the articles of the research: the LLM never writes them.
 """
 import json
 
-from graph.lengths import length_problems, length_targets, section_targets
+from graph.lengths import length_problems, length_targets, planned_targets, section_targets
 from graph.nodes.align import normalize
 from graph.script_files import ROLE_LABELS
 from graph.state import Outline, Script, SectionDraft
@@ -26,7 +30,7 @@ CONTEXT_SCENES = 2            # scenes of the previous section shown for continu
 
 
 def section_request(state, outline, number, targets, facts, video_format, before=None,
-                    previous=None, feedback=None):
+                    previous=None, feedback=None, opening=None):
     section = outline.sections[number - 1]
     total = len(outline.sections)
     plan = "\n".join(f"{n}. [{ROLE_LABELS[s.role]}] {s.title}: {s.goal}"
@@ -49,10 +53,18 @@ def section_request(state, outline, number, targets, facts, video_format, before
               position]
     if number == 1 and angle.get("hook"):
         parts.append(f"Gancho propuesto (úsalo o mejóralo, sin salirte de los hechos): \"{angle['hook']}\"")
+    if video_format == "long":
+        parts.append("Es un VÍDEO LARGO: aplica también las técnicas de \"Vídeos largos\".")
     parts += [f"Longitud: entre {targets['min_scenes']} y {targets['max_scenes']} escenas, y entre "
               f"{targets['min_words']} y {targets['max_words']} palabras de narración (objetivo: {targets['words']}).",
               "", "# Hechos para esta sección",
               "\n".join(f"{n}. {facts[n - 1]['fact']}" for n in used)]
+    told = sorted({f for s in outline.sections[:number - 1] for f in s.facts} - set(section.facts))
+    if told:
+        parts += ["", "# Ya contados en secciones anteriores (no los vuelvas a contar; como mucho, alúdelos)",
+                  "\n".join(f"{n}. {facts[n - 1]['fact']}" for n in told if 1 <= n <= len(facts))]
+    if opening and number == total and video_format == "long":
+        parts += ["", "# Así empezó el vídeo (el cierre puede volver a esta imagen o pregunta)", opening]
     if before:
         parts += ["", "# Así termina la sección anterior (enlaza con ella, no la repitas)",
                   "\n".join(s.narration for s in before)]
@@ -73,7 +85,7 @@ def trigrams(text):
 
 def repetition_problems(scenes, before=None):
     """What a scene repeats from the one just before it (the first one, from the end of the previous
-    section): the same expression, or the same on-screen text."""
+    section): the same expression."""
     problems = []
     chain = ([before[-1]] if before else []) + list(scenes)
     for previous, scene in zip(chain, chain[1:]):
@@ -82,9 +94,6 @@ def repetition_problems(scenes, before=None):
             problems.append(f"\"{scene.narration[:60]}...\" repite \"{sorted(repeated)[0]}\" de la escena "
                             "anterior: refiérete a ello de otra forma (sinónimo, pronombre, descripción o "
                             "metáfora) o cuenta algo nuevo")
-        if scene.on_screen_text and scene.on_screen_text == previous.on_screen_text:
-            problems.append(f"El texto en pantalla \"{scene.on_screen_text}\" es el mismo que en la escena "
-                            "anterior: cámbialo o déjalo en null")
     return problems
 
 
@@ -96,7 +105,7 @@ def make_write_script(hub, settings=None):
     def write_script(state):
         outline, facts = Outline.model_validate(state["outline"]), state["facts"]
         video_format = state.get("format") or settings.get("format", "long")
-        targets = length_targets(video_format, settings)
+        targets = planned_targets(length_targets(video_format, settings), sum(s.words for s in outline.sections))
         # Rewriting after a review: each section starts from its previous version and the feedback
         old = Script.model_validate(state["script"]) if state.get("script") else None
         feedback = state.get("review_feedback") if old else None
@@ -107,9 +116,11 @@ def make_write_script(hub, settings=None):
             before = sections[-1][-CONTEXT_SCENES:] if sections else None
             previous = old.section_scenes(number) if old else None
 
+            opening = " ".join(s.narration for s in sections[0][:2]) if sections else None
+
             def write(previous, feedback):
                 return generate.invoke({"text": section_request(state, outline, number, goal, facts, video_format,
-                                                                before, previous, feedback)}).scenes
+                                                                before, previous, feedback, opening)}).scenes
 
             def check(scenes):
                 return (length_problems(sum(len(s.narration.split()) for s in scenes), len(scenes), goal,

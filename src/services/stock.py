@@ -1,45 +1,81 @@
-"""Stock footage and photos: Pexels and Pixabay (free, real footage with a licence to use it).
-One of the sources of the visuals node (graph/nodes/visuals.py).
+"""Free footage and photos with a licence to use them. Sources of the visuals node (graph/nodes/visuals.py).
+    pexels, pixabay   stock banks: videos and photos
+    nasa              NASA Image and Video Library: photos of space, missions, the Earth from orbit
+                      (public domain). Its videos are skipped: they are edited pieces (narration,
+                      logos, titles), not footage to cut.
+    wikimedia         Wikimedia Commons: photos of real, named things (companies, buildings, people,
+                      places). Only free licences that allow commercial use (public domain, CC0,
+                      CC BY, CC BY-SA): they ask for attribution, kept in the candidate's "license".
 
     search(query, kind, orientation, providers)   -> [candidate, ...] in the providers' order
     thumbnail(candidate, folder)                   -> local JPEG (to compare it with the text)
     download(candidate, width, height, folder)     -> local file, in the smallest size that fills the frame
 
 A candidate is a plain dict, the same for every provider:
-    {"provider", "id", "kind": "video" | "photo", "page_url", "author", "width", "height", "thumb",
-     "duration" (videos, s), "ai_generated", "renditions": [{"url", "width", "height"}, ...]}
+    {"provider", "id", "kind": "video" | "photo", "page_url", "author", "license", "width", "height",
+     "thumb", "duration" (videos, s), "ai_generated", "renditions": [{"url", "width", "height"}, ...]}
 
-Keys in the .env: PEXELS_API_KEY, PIXABAY_API_KEY. A provider without a key is skipped.
-Rate limits: Pixabay 100 requests/min, Pexels 200/hour.
+Keys in the .env: PEXELS_API_KEY, PIXABAY_API_KEY (NASA and Wikimedia need none). A provider
+without its key is skipped. Rate limits: Pixabay 100 requests/min, Pexels 200/hour.
 """
+import html
 import os
+import re
 import time
 from pathlib import Path
 
 import requests
 
-from llmkit import config  # noqa: F401  (loads the .env)
+from llmkit import config
 
 TIMEOUT = 20
 MAX_UPSCALE = 1.35        # a rendition may be enlarged this much to fill the frame (more looks blurry)
-KEYS = {"pexels": "PEXELS_API_KEY", "pixabay": "PIXABAY_API_KEY"}
+MAX_WAIT = 120            # seconds waited at most after a 429 before trying again
+KEYS = {"pexels": "PEXELS_API_KEY", "pixabay": "PIXABAY_API_KEY", "nasa": None, "wikimedia": None}
 HEADERS = {"User-Agent": "Mozilla/5.0"}
+# Wikimedia asks for a User-Agent that says who is calling (a generic one may be blocked)
+PROVIDER_HEADERS = {"wikimedia": {"User-Agent": config.USER_AGENT}}
+# Seconds between file requests (thumbnails, downloads): Wikimedia answers 429 to quick bursts
+PACE = {"wikimedia": 1.0}
+_last_file_request = {}
 
 
 def available(providers):
-    """The providers (in order) that have a key in the .env."""
-    return [p for p in providers if os.getenv(KEYS[p], "").strip()]
+    """The providers (in order) that have a key in the .env (or need none)."""
+    return [p for p in providers if KEYS[p] is None or os.getenv(KEYS[p], "").strip()]
+
+
+def _request(url, params=None, headers=None, retries=2, stream=False):
+    """GET with a wait-and-retry on 429 (rate limit) -> the response."""
+    for attempt in range(retries + 1):
+        r = requests.get(url, params=params, headers=headers, timeout=TIMEOUT, stream=stream)
+        if r.status_code == 429 and attempt < retries:
+            r.close()
+            wait = int(r.headers.get("X-RateLimit-Reset") or r.headers.get("Retry-After") or 30)
+            if wait > 10 ** 9:                  # Pexels sends a timestamp (the end of its period), not seconds
+                wait -= time.time()
+            # at least 10 s, 20 s...: Wikimedia's reset is often too short for a burst to clear
+            time.sleep(min(max(wait, 10 * (attempt + 1)), MAX_WAIT) + 1)
+            continue
+        r.raise_for_status()
+        return r
+
+
+def _fetch_file(candidate, url, stream=False):
+    """GET of one of the candidate's files, spaced as its provider asks (PACE)."""
+    provider = candidate["provider"]
+    pause = PACE.get(provider, 0) - (time.time() - _last_file_request.get(provider, 0))
+    if pause > 0:
+        time.sleep(pause)
+    try:
+        return _request(url, headers=PROVIDER_HEADERS.get(provider, HEADERS), retries=3, stream=stream)
+    finally:
+        _last_file_request[provider] = time.time()
 
 
 def _get(url, params=None, headers=None, retries=2):
-    """GET with a wait-and-retry on 429 (rate limit)."""
-    for attempt in range(retries + 1):
-        r = requests.get(url, params=params, headers=headers, timeout=TIMEOUT)
-        if r.status_code == 429 and attempt < retries:
-            time.sleep(int(r.headers.get("X-RateLimit-Reset") or r.headers.get("Retry-After") or 30) + 1)
-            continue
-        r.raise_for_status()
-        return r.json()
+    """GET of a JSON API, with a wait-and-retry on 429."""
+    return _request(url, params, headers, retries).json()
 
 
 def _fit(width, height, max_width=None, long_side=None):
@@ -54,14 +90,16 @@ def _pexels(query, kind, orientation, per_page):
     if kind == "video":
         data = _get("https://api.pexels.com/videos/search", params, headers)
         return [{"provider": "pexels", "id": v["id"], "kind": "video", "page_url": v["url"],
-                 "author": (v.get("user") or {}).get("name", ""), "width": v["width"], "height": v["height"],
+                 "author": (v.get("user") or {}).get("name", ""), "license": "Pexels License",
+                 "width": v["width"], "height": v["height"],
                  "duration": v["duration"], "ai_generated": False, "thumb": v.get("image", ""),
                  "renditions": [{"url": f["link"], "width": f["width"], "height": f["height"]}
                                 for f in v["video_files"] if f.get("file_type") == "video/mp4"]}
                 for v in data.get("videos", [])]
     data = _get("https://api.pexels.com/v1/search", params, headers)
     return [{"provider": "pexels", "id": p["id"], "kind": "photo", "page_url": p["url"],
-             "author": p.get("photographer", ""), "width": p["width"], "height": p["height"],
+             "author": p.get("photographer", ""), "license": "Pexels License",
+             "width": p["width"], "height": p["height"],
              "ai_generated": False, "thumb": p["src"]["medium"],
              # the original, resized by the CDN to at most 2400 px wide (aspect kept)
              "renditions": [{"url": p["src"]["original"] + "?auto=compress&cs=tinysrgb&w=2400",
@@ -78,7 +116,7 @@ def _pixabay(query, kind, orientation, per_page):
         # Only filmed footage: "animation" is mostly cheap motion graphics and green screens.
         data = _get("https://pixabay.com/api/videos/", params | {"video_type": "film"})
         return [{"provider": "pixabay", "id": h["id"], "kind": "video", "page_url": h["pageURL"],
-                 "author": h.get("user", ""), "duration": h["duration"],
+                 "author": h.get("user", ""), "license": "Pixabay Content License", "duration": h["duration"],
                  "width": h["videos"]["medium"]["width"] or h["videos"]["small"]["width"],
                  "height": h["videos"]["medium"]["height"] or h["videos"]["small"]["height"],
                  "ai_generated": bool(h.get("isAiGenerated")),
@@ -90,13 +128,84 @@ def _pixabay(query, kind, orientation, per_page):
     data = _get("https://pixabay.com/api/", params)
     # largeImageURL is at most 1280 px on its long side (the full size needs extra API approval)
     return [{"provider": "pixabay", "id": h["id"], "kind": "photo", "page_url": h["pageURL"],
-             "author": h.get("user", ""), "width": h["imageWidth"], "height": h["imageHeight"],
+             "author": h.get("user", ""), "license": "Pixabay Content License",
+             "width": h["imageWidth"], "height": h["imageHeight"],
              "ai_generated": bool(h.get("isAiGenerated")), "thumb": h["webformatURL"],
              "renditions": [{"url": h["largeImageURL"], **_fit(h["imageWidth"], h["imageHeight"], long_side=1280)}]}
             for h in data.get("hits", [])]
 
 
-SEARCHERS = {"pexels": _pexels, "pixabay": _pixabay}
+# ------------------------------------------------------------------- nasa
+def _nasa(query, kind, orientation, per_page):
+    if kind == "video":
+        return []
+    data = _get("https://images-api.nasa.gov/search", {"q": query, "media_type": "image", "page_size": per_page})
+    found = []
+    for item in data.get("collection", {}).get("items", []):
+        info, links = item["data"][0], [x for x in item.get("links", []) if x.get("render") == "image"]
+        sized = [{"url": x["href"], "width": x["width"], "height": x["height"]}
+                 for x in links if x.get("width") and x.get("height")]
+        if not sized:
+            continue
+        preview = next((x["href"] for x in links if x.get("rel") == "preview"), min(sized, key=lambda r: r["width"])["url"])
+        largest = max(sized, key=lambda r: r["width"])
+        found.append({"provider": "nasa", "id": re.sub(r"[^\w.-]", "_", info["nasa_id"]), "kind": "photo",
+                      "page_url": "https://images.nasa.gov/details/" + requests.utils.quote(info["nasa_id"]),
+                      "author": info.get("photographer") or info.get("secondary_creator") or f"NASA {info.get('center', '')}".strip(),
+                      "license": "NASA (dominio público)", "width": largest["width"], "height": largest["height"],
+                      "ai_generated": False, "thumb": preview, "renditions": sized})
+    return found
+
+
+# -------------------------------------------------------------- wikimedia
+FREE_LICENSE = re.compile(r"^(public domain|pd\b|cc0|cc by(-sa)? [\d.]+)", re.IGNORECASE)
+# Thumbnail widths Commons serves (it refuses most others). Its thumbnails come from
+# thumb.wikimedia.org; upload.wikimedia.org (the originals) answers 429 after one or two files.
+COMMONS_THUMB = 500
+COMMONS_SIZES = (960, 1280, 1920, 3840)
+
+
+def _commons_renditions(info):
+    """The standard-width thumbnails smaller than the original; the original only without any."""
+    thumb, marker = info.get("thumburl", ""), f"/{COMMONS_THUMB}px-"
+    renditions = [{"url": thumb.replace(marker, f"/{w}px-"), "width": w,
+                   "height": round(info["height"] * w / info["width"])}
+                  for w in COMMONS_SIZES if marker in thumb and info["width"] > w]
+    return renditions or [{"url": info["url"], "width": info["width"], "height": info["height"]}]
+
+
+def _commons_author(meta):
+    """Artist comes as HTML (a link to the user's page): only its text."""
+    text = re.sub(r"<[^>]+>", "", (meta.get("Artist") or {}).get("value", ""))
+    return html.unescape(text).strip()
+
+
+def _wikimedia(query, kind, orientation, per_page):
+    if kind == "video":
+        return []
+    params = {"action": "query", "format": "json", "generator": "search", "gsrnamespace": 6,
+              "gsrsearch": f"{query} filetype:bitmap", "gsrlimit": per_page,
+              "prop": "imageinfo", "iiprop": "url|size|mime|extmetadata", "iiurlwidth": COMMONS_THUMB,
+              "iiextmetadatafilter": "LicenseShortName|Artist|NonFree"}
+    data = _get("https://commons.wikimedia.org/w/api.php", params, PROVIDER_HEADERS["wikimedia"])
+    pages = sorted(data.get("query", {}).get("pages", {}).values(), key=lambda p: p.get("index", 0))
+    found = []
+    for page in pages:
+        info = (page.get("imageinfo") or [{}])[0]
+        meta = info.get("extmetadata", {})
+        licence = (meta.get("LicenseShortName") or {}).get("value", "")
+        if (info.get("mime") not in ("image/jpeg", "image/png", "image/webp") or (meta.get("NonFree") or {}).get("value")
+                or max(info.get("width", 0), info.get("height", 0)) < 1280      # too small for a full frame
+                or not FREE_LICENSE.match(licence) or re.search(r"\b(nc|nd)\b", licence, re.IGNORECASE)):
+            continue
+        found.append({"provider": "wikimedia", "id": page["pageid"], "kind": "photo",
+                      "page_url": info.get("descriptionurl", ""), "author": _commons_author(meta),
+                      "license": licence, "width": info["width"], "height": info["height"], "ai_generated": False,
+                      "thumb": info.get("thumburl") or info["url"], "renditions": _commons_renditions(info)})
+    return found
+
+
+SEARCHERS = {"pexels": _pexels, "pixabay": _pixabay, "nasa": _nasa, "wikimedia": _wikimedia}
 
 
 def search(query, kind, orientation, providers, per_page=10):
@@ -118,9 +227,7 @@ def thumbnail(candidate, folder):
     """The candidate's preview image (a frame for videos) -> local file (kept)."""
     path = Path(folder) / f"{candidate['provider']}_{candidate['id']}_thumb.jpg"
     if not path.exists():
-        r = requests.get(candidate["thumb"], headers=HEADERS, timeout=TIMEOUT)
-        r.raise_for_status()
-        path.write_bytes(r.content)
+        path.write_bytes(_fetch_file(candidate, candidate["thumb"]).content)
     return path
 
 
@@ -147,8 +254,7 @@ def download(candidate, width, height, folder):
     if path.exists() and path.stat().st_size > 0:
         return path
     partial = path.with_suffix(path.suffix + ".part")
-    with requests.get(rendition["url"], stream=True, timeout=TIMEOUT, headers=HEADERS) as r:
-        r.raise_for_status()
+    with _fetch_file(candidate, rendition["url"], stream=True) as r:
         with open(partial, "wb") as f:
             for chunk in r.iter_content(1 << 20):
                 f.write(chunk)

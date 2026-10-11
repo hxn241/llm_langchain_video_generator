@@ -21,19 +21,47 @@ llm:
       api_key_env: OPENROUTER_API_KEY
       timeout: 120
       max_retries: 3                         # los modelos gratis a veces devuelven 429/503
+      requests_per_minute: 16                # los gratis admiten ~20/min: espera en vez de fallar con 429
 
   # Cada nodo hereda de `default` y sobrescribe lo que ponga.
   # Admite cualquier opción del modelo (max_tokens, top_p...).
-  default:      {provider: local, model: google/gemma-4-12b, temperature: 0.3}   # id de `lms ls`
-                                             # (con visión, ~9,7 GB: cabe entero en la GPU; antes qwen/qwen3.5-9b)
-  angles:       {temperature: 0.9}           # 3 enfoques distintos: necesita creatividad (y es donde más
-                                             # se nota un modelo fuerte, como en write_script)
-  write_script: {temperature: 0.8}
-  review:       {temperature: 0.0}
-  beats:        {temperature: 0.4}           # corta la narración en fragmentos visuales y los describe
-  visuals:      {temperature: 0.0}           # elige entre candidatos MIRANDO las imágenes: necesita visión
-  # Para elegir mejor, un modelo más fuerte con visión solo en este nodo, p. ej.:
-  # visuals: {provider: openrouter, model: <modelo-con-visión>, temperature: 0.0}
+  # Texto: Claude Sonnet 5.5 de pago en OpenRouter (2 $ / 10 $ por millón de tokens; ~0,30 $ por
+  # short con research, enfoques, esquema, guion, brief y beats).
+  # Antes: nvidia/nemotron-3-ultra-550b-a55b:free (gratis, pero se saltaba reglas de los prompts);
+  # en local, ministral-3-14b-instruct-2512 (entraba en bucle sin cerrar el JSON), google/gemma-4-12b.
+  default:      {provider: openrouter, model: "anthropic/claude-sonnet-5.5", temperature: 0.3,
+                 structured_output: json_schema, timeout: 300, max_tokens: 16000}
+  # Respaldo de los nodos de texto: si Sonnet falla, ese nodo sigue con este el resto del run.
+  # Nemotron 3 Super gratis. Usa su propia temperatura, no la del nodo.
+  cloud:        {model: "nvidia/nemotron-3-super-120b-a12b:free"}
+  research:     {temperature: 0.3, fallback: cloud}
+  deep_research: {temperature: 0.3, fallback: cloud}   # vídeos largos: el contexto de cada sección
+  angles:       {temperature: 0.9, fallback: cloud}   # 3 enfoques distintos
+  outline:      {temperature: 0.3, fallback: cloud}
+  write_script: {temperature: 0.8, fallback: cloud}
+  # Plan visual (brief: el universo visual del vídeo; beats: las ideas y sus planos). Es donde más
+  # se nota un modelo fuerte (traducir metáforas a planos filmables) y son 2-5 llamadas por vídeo.
+  # Con un modelo de OpenRouter (OPENROUTER_API_KEY en el .env): structured_output: json_schema
+  # para los modelos con "structured_outputs" en openrouter.ai/models; function_calling para los
+  # que solo tienen "tools" (p. ej. nvidia/nemotron-3-ultra-550b-a55b:free, google/gemma-4-31b-it:free).
+  # fallback: el nodo que se usa si este falla (429 de un gratis saturado, límite diario...): desde
+  # ese fallo, el resto del run va directo a él.
+  # Con Sonnet (de `default`). Nemotron se saltaba las reglas de brief.md y beats.md (sujetos
+  # repetidos, conceptos y marcas en los prompts).
+  brief:        {temperature: 0.5, fallback: cloud}
+  beats:        {temperature: 0.4, fallback: cloud}
+  # Título, resumen, etiquetas y texto de la miniatura para YouTube (scripts/prepare_upload.py,
+  # fuera del pipeline; una llamada por vídeo).
+  publish:      {temperature: 0.7, fallback: cloud}
+  # Juez de visuals: elige entre candidatos MIRANDO las imágenes (necesita visión). Una llamada por
+  # fragmento: ~20 en un short, 150-250 en un largo. Gemma 4 31B de pago (0,09 $ / 0,34 $ por millón:
+  # céntimos por vídeo, sin 429); si falla, el mismo gratis.
+  # No sirven: Qwen2.5 VL 7B local (confundía la nota con el número de imagen y lo rechazaba todo),
+  # thinkingmachines/inkling:free (403, "only available on agentic harnesses").
+  visuals:      {model: "google/gemma-4-31b-it", temperature: 0.0, max_tokens: 8192,
+                 structured_output: function_calling, fallback: visuals_cloud}
+  visuals_cloud: {model: "google/gemma-4-31b-it:free", temperature: 0.0, max_tokens: 8192,
+                  structured_output: function_calling}
   # judge: {...}                             # juez de las evaluaciones (mejor uno más capaz)
   # Si el guion no convence en local, cambiar solo este nodo:
   # write_script: {provider: openrouter, model: <modelo-fuerte>, temperature: 0.8}
@@ -67,28 +95,48 @@ align:
 
 visuals:
   # Cada fragmento visual (nodo beats) tiene un tipo; sus fuentes, en orden. Si ninguna da un
-  # candidato que el modelo con visión puntúe >= min_score, el fragmento se GENERA (HiDream).
-  #   entity:   algo real con nombre propio (persona pública, institución, lugar...)  -> pendiente: Wikimedia
+  # candidato que el modelo con visión puntúe >= min_score, el fragmento se GENERA (Z-Image, sección comfy).
+  #   entity:   algo real con nombre propio (persona pública, institución, lugar...)
   #   generic:  algo real pero genérico (gente, calles, objetos, acciones)
   #   data:     una cifra o comparación                                              -> pendiente: gráficos
   #   source:   la noticia o el documento citado                                     -> pendiente: capturas
   #   abstract: una idea que no se puede filmar (en stock, una metáfora visual)
-  # Mientras no estén sus fuentes propias, todos buscan en stock: el modelo con visión descarta
-  # lo que no encaje y entonces se genera.
+  # Fuentes (sin clave): stock (Pexels/Pixabay: vídeos y fotos), nasa (fotos de NASA: espacio,
+  # misiones, la Tierra desde órbita; dominio público), wikimedia (fotos de Wikimedia Commons de cosas
+  # reales con nombre; licencias libres que piden atribución: se apuntan en <run>/creditos.txt).
+  # Las fuentes de un tipo se reparten los max_candidates (la primera, primero): cada fuente de más
+  # quita sitios a stock, la única con vídeo. Por eso, por defecto, solo wikimedia en entity.
+  # En un vídeo de espacio/ciencia, añade nasa a mano (p. ej. abstract: [stock, nasa]).
   sources:
-    entity: [stock]
+    entity: [stock, wikimedia]
     generic: [stock]
     data: [stock]
     source: [stock]
     abstract: [stock]
-  beat_seconds: {short: [2, 4], long: [3, 6]}   # duración de cada plano; uno más largo (+20 %) se parte
+  beat_seconds: {short: [2, 4], long: [5, 10]}  # duración de cada plano; uno más largo (+20 %) se parte.
+                              # long antes [3, 6]: ~200 planos en 10 min; con [5, 10], ~100
+  # Una foto no se ve más de esto (solo vídeos largos: en los shorts los planos ya son cortos). Un
+  # plano más largo busca primero un VÍDEO; si no lo hay, se reparte entre varias imágenes
+  # (montaje/05.jpg + 05b.jpg): otra buena o, si no, la misma escena generada con otro encuadre.
+  photo_max_seconds: {long: 5}
   min_beat_seconds: 1.5       # uno más corto se une al anterior
   max_candidates: 16          # candidatos por fragmento (sumando fuentes y búsquedas)
   embed_model: google/siglip2-base-patch16-224  # primer filtro: parecido texto-imagen
   top_k: 8                    # los mejores según SigLIP 2 que ve el modelo con visión
   min_score: 5                # 0-10 del modelo con visión para usar un candidato. Bajo a propósito:
                               # un plano real "del tema" queda mejor que una imagen generada
-  # Estilo común a las imágenes generadas (va al final de cada prompt, en inglés)
+  # Generación de lo que no pasa el juez:
+  #   openrouter: de pago (OPENROUTER_API_KEY con saldo), generate_model. Nano Banana 2: ~0,10 $
+  #               por imagen a 2K, menos a 1K. Si falla (sin saldo, error), el resto se hace con comfy.
+  #   comfy:      Z-Image Turbo en local, gratis (ComfyUI arrancado; sección comfy).
+  # Otros modelos de imagen en OpenRouter: google/gemini-3-pro-image (Nano Banana Pro, mejor y
+  # más caro), black-forest-labs/flux-3-image, krea/krea-2-large, bytedance-seed/seedream-5-0-pro.
+  generator: openrouter       # en prueba; antes comfy
+  generate_model: google/gemini-3.1-flash-image   # Nano Banana 2 (el 2.1 daba 429: cupo de Google agotado)
+  generate_resolution: 1K     # 1K | 2K | 4K (no todos los modelos lo admiten: quítalo si da error).
+                              # 1K: el vídeo es 1080p como mucho, más no se ve y cuesta más
+  # Estilo común a las imágenes generadas (va al final de cada prompt, en inglés). Solo si el
+  # brief no da uno (brief.json: style)
   image_style: "documentary photograph, natural light, realistic, candid, 35mm lens, shallow depth of field"
   # Fuente stock: bancos en orden de preferencia; uno sin clave en el .env se salta.
   # Límites: Pixabay 100 búsquedas/min, Pexels 200/hora (hasta 6 búsquedas por fragmento: 3
@@ -98,26 +146,48 @@ visuals:
   per_page: 6                 # resultados por búsqueda (vídeos y fotos)
 
 comfy:
-  # Generación de imágenes con HiDream-O1-Image (licencia MIT) en ComfyUI, instalado aparte
-  # en C:\Users\hexen\ComfyUI (su propio .venv). Arrancarlo antes del pipeline:
+  # Generación de imágenes con Z-Image Turbo (Alibaba, licencia Apache 2.0) en ComfyUI, instalado
+  # aparte en C:\Users\hexen\ComfyUI (su propio .venv). Arrancarlo antes del pipeline:
   #   cd C:\Users\hexen\ComfyUI; .venv\Scripts\python.exe main.py --listen 127.0.0.1 --port 8188
+  # Modelos (huggingface.co/Comfy-Org/z_image_turbo, split_files/) en ComfyUI\models\:
+  # diffusion_models\, text_encoders\, vae\. Más rápido en la RTX 5070, algo menos fino:
+  # model: z_image_turbo_nvfp4.safetensors (4,5 GB en vez de 12,3).
   url: http://127.0.0.1:8188
-  variant: dev                # dev (28 pasos, ~3x más rápido) | full (40 pasos, mejor calidad)
-  checkpoint: hidream_o1_image_dev_fp8_scaled.safetensors   # full: hidream_o1_image_fp8_scaled.safetensors
+  model: z_image_turbo_bf16.safetensors
+  text_encoder: qwen_3_4b.safetensors
+  vae: ae.safetensors
+  steps: 8                    # es un modelo destilado: 8 pasos, sin CFG
+  megapixels: 2.0             # tamaño de la imagen (con la proporción del vídeo); luego se escala al cuadro
   timeout: 900                # segundos máximos por imagen
 
 video:
   # seconds: [mín, máx] de narración; el guion se pide para target_seconds.
   # sections: [mín, máx] secciones del esquema (el guion se escribe sección a sección).
   short:  {width: 1080, height: 1920, target_seconds: 55, seconds: [45, 60], scenes: [6, 10], sections: [3, 3]}
-  long:   {width: 1920, height: 1080, target_seconds: 630, seconds: [480, 780], scenes: [50, 80], sections: [6, 8]}
+  long:   {width: 1920, height: 1080, target_seconds: 300, seconds: [270, 330], scenes: [24, 38], sections: [4, 6]}
   words_per_second: 2.5       # ritmo de narración en español (~150 palabras/min): fija la longitud del guion
   fps: 30
   loudness_lufs: -14
   scene_gap: 0.15             # segundos de pausa tras la narración de cada escena
   encoder: auto               # auto (h264_nvenc si hay GPU NVIDIA, si no libx264) | h264_nvenc | libx264
   quality: 21                 # calidad constante del vídeo final (menor = mejor y más pesado)
-  font: Arial                 # texto en pantalla; se busca en fonts_dir y, si está vacía, en las del sistema
+  # Subtítulos quemados (tiempos de align). words: máximo de palabras por subtítulo (0 = sin subtítulos);
+  # seconds: máximo que dura cada uno. highlight: true = pocas palabras con la que se dice resaltada
+  # (estilo Shorts); false = frases clásicas en 1-2 líneas, cortadas en los puntos (y en las comas si
+  # ya son largas). El .srt de YouTube (prepare_upload) se hace aparte, igual para los dos.
+  subtitles:
+    short: {words: 3, seconds: 2, highlight: true}
+    long:  {words: 14, seconds: 5, highlight: false}
+  # Fundido cruzado entre ESCENAS (segundos; 0 = corte seco). Dentro de una escena siempre corte seco.
+  transition: {short: 0.3, long: 0.4}
+  # Música: la tuya, montaje/musica.mp3 en la pausa review_visuals (sin ella, sin música). Volumen FIJO
+  # (sin ducking): db por debajo de la voz (-17 más alta, -23 más baja); eq_db: hueco en 1-4 kHz para la voz.
+  music: {db: -20, eq_db: -4, fade_in: 2, fade_out: 3}
+  # 2.5D en las fotos: el modelo de profundidad (GPU, .venv-tts; ~100 MB, se descarga la primera vez)
+  # separa primer plano y fondo y el primer plano se mueve un poco más. strength: cuánto (sutil: 0.015-0.03).
+  # Si falla, movimiento normal. Las fotos planas (gráficos, capturas) se mueven sin profundidad.
+  parallax: {enabled: true, strength: 0.02, model: depth-anything/Depth-Anything-V2-Small-hf}
+  font: Arial                 # subtítulos; se busca en fonts_dir y, si está vacía, en las del sistema
   fonts_dir: assets/fonts
 
 research:
@@ -126,11 +196,27 @@ research:
   max_articles: {short: 3, long: 6}
   max_article_chars: 6000     # ~1.700 tokens por artículo al extraer hechos
   region: es-es               # solo DuckDuckGo; el buscador se elige con SEARCH_PROVIDER en el .env (tavily)
+  # Investigación por secciones (nodo deep_research, tras aprobar el esquema): el CONTEXTO de cada
+  # sección (historia, cómo funciona, protagonistas, riesgos...) en la web y en Wikipedia. Solo
+  # vídeos largos: 5 minutos no salen de seis artículos de la misma noticia.
+  deep: {short: false, long: true}
+  deep_sources_per_section: 4     # textos leídos por sección (web + Wikipedia); ~1 llamada al LLM cada uno
+  deep_results_per_query: 3       # resultados de cada búsqueda web
+  words_per_fact: 22              # cuánto guion da un dato: una sección con pocos datos se acorta
+                                  # (nunca se rellena) y una sin datos se quita
 
 review:
   max_revisions: 2
 
 youtube:
-  privacy: private            # private | unlisted | scheduled
-  category_id: 28             # Science & Technology
+  # Fuera del pipeline: scripts/prepare_upload.py (run -> carpeta lista) y scripts/upload_youtube.py
+  # (carpeta -> YouTube). Ver src/services/publish.py y src/services/youtube.py.
+  ready_dir: data/listo_para_subir     # una carpeta por vídeo: video.mp4, metadata.json, descripcion.md...
+  uploaded_dir: data/subidos           # adonde pasa la carpeta tras subirla (con youtube.json)
+  client_secret: data/youtube/client_secret.json   # credencial OAuth de escritorio (Google Cloud)
+  token: data/youtube/token.json       # se crea al autorizar tu canal la primera vez
+  privacy: private            # private | unlisted | public (sin auditoría de Google, la API solo sube privado)
+  category_id: 28             # 28 Ciencia y tecnología · 25 Noticias y política · 27 Educación
   default_language: es
+  made_for_kids: false
+  thumbnail_font: C:/Windows/Fonts/ariblk.ttf   # Arial Black; la miniatura lleva 2-4 palabras grandes

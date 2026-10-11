@@ -6,20 +6,30 @@
     python scripts/run_pipeline.py --resume 20261004-153000      # a run left paused (e.g. at the outline)
     python scripts/run_pipeline.py --resume 20261004-153000 --redo visuals   # redo a media node and what follows
 
-It stops twice before writing:
+It stops four times:
   1. the angle: 3 proposals; [y] the recommended one, [e] another number or your own angle as text,
      [n] three new ones (with your reason). angles.json can be edited before approving.
   2. the outline: you read it (and may edit outline.json), then approve it or reject it with a reason.
---yes approves both on its own (tests).
+     Long videos then look up each section's context (deep_research: web + Wikipedia) and stop
+     once more (review_research): facts per section and how long the video comes out; [y] go on,
+     [n] add your links ("4 https://... 6 https://...": section number, then its links).
+  3. the script (script.md): [y] go on with it; [n] write yours: <run>/manual/guion.md comes with
+     its scenes to edit or replace, with [file.jpg] marks where your images/videos go (visuales/).
+     See src/graph/manual.py.
+  4. before assembling: <run>/montaje/ has everything in order (01.mp4, 02.jpg...; lista.md says what
+     each one is). Replace, remove or add files there and [y]: it is assembled exactly as it is,
+     without any judge. [n] stops; `--redo assemble` reads the folder again (see src/graph/montage.py).
+     manual/prompts_imagenes.md has every beat's prompt, to make a replacement with your own AI.
+--yes approves all of them on its own (tests): the written script, the visuals as chosen.
 
-    python scripts/run_pipeline.py --topic "..." --manual       # you write the script, you bring the visuals
+    python scripts/run_pipeline.py --topic "..." --manual       # straight to your script (no write_script)
 
---manual: after the outline it pauses a third time with <run>/manual/ ready: guion.md (your script,
-with [file.jpg] marks where your images/videos go) and visuales/ (the files). See src/graph/manual.py.
-In a manual run, --redo reads guion.md again: replaced files -> --redo visuals; changed marks
+In a manual run (yours at pause 3), --redo reads guion.md again: replaced files -> --redo visuals; changed marks
 -> --redo beats; changed narration -> --redo voice.
---redo (voice | align | beats | visuals | assemble) runs that node again and the ones after
-it, also on a finished run (e.g. one made before that node existed).
+--redo (voice | align | brief | beats | visuals | assemble) runs that node again and the ones after
+it, also on a finished run (e.g. one made before that node existed). brief.json and beats.json are
+read again if they exist (your edits count): delete them for new ones. A brief.json newer than
+beats.json (new or edited) makes new beats.
 
 Each run is a LangGraph thread (id = run_id) saved in <STATE_DIR>/checkpoints.sqlite,
 and its files go to <STATE_DIR>/runs/<run_id>/.
@@ -35,7 +45,8 @@ from llmkit import config
 from services import LLMHub, approve_all, ask_decisions, run_cli
 from services.settings import load_settings, runs_dir
 
-REDO_NEEDS = {"voice": ["script"], "align": ["script", "audio"], "beats": ["script", "audio"],
+REDO_NEEDS = {"voice": ["script"], "align": ["script", "audio"], "brief": ["script", "audio"],
+              "beats": ["script", "audio"],
               "visuals": ["script", "audio", "beats"], "assemble": ["script", "audio", "visuals"]}
 
 
@@ -48,8 +59,9 @@ def parse_args():
     parser.add_argument("--resume", metavar="RUN_ID", help="continue a paused run")
     parser.add_argument("--redo", choices=sorted(REDO_AFTER), help="with --resume: run this node again "
                                                                        "and the ones after it")
-    parser.add_argument("--yes", action="store_true", help="approve the angle and the outline without asking")
-    parser.add_argument("--manual", action="store_true", help="you write the script and bring the images/videos "
+    parser.add_argument("--yes", action="store_true", help="approve every pause without asking (the written script, "
+                                                           "no images of yours)")
+    parser.add_argument("--manual", action="store_true", help="straight to your script, without write_script "
                                                               "(after the outline it pauses: see <run>/manual/)")
     args = parser.parse_args()
     if not args.topic and not args.resume:
@@ -64,9 +76,7 @@ def parse_args():
 def manual_update(values, run_id, redo):
     """Manual run + --redo: guion.md is read again (your changes count). Changed narration needs a
     new voice (--redo voice); changed marks need new beats (--redo beats or earlier)."""
-    problems = manual.fetch(runs_dir(run_id))                    # media_escenas.json may have changed
-    script, marks, more = manual.parse(runs_dir(run_id), [s["url"] for s in values.get("sources", [])])
-    problems += [p for p in more if p not in problems]
+    script, marks, problems = manual.parse(runs_dir(run_id), [s["url"] for s in values.get("sources", [])])
     if problems:
         raise SystemExit("El guion tiene problemas:\n" + "\n".join(f"  - {p}" for p in problems))
     order = list(REDO_AFTER)                                    # voice, align, beats, visuals, assemble

@@ -33,6 +33,7 @@ chroma = ["langchain-chroma"]                                        # VECTOR_ST
 pdf = ["pypdf"]                                                      # .pdf documents
 local-embeddings = ["langchain-huggingface", "sentence-transformers"]  # EMBEDDING_PROVIDER=local
 semantic-store = ["sqlite-vec"]                                      # search by meaning in store_in_sqlite
+youtube = ["google-api-python-client", "google-auth-oauthlib"]     # scripts/upload_youtube.py
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

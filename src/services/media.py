@@ -1,5 +1,5 @@
 """ffmpeg helpers. The ffmpeg used is the one inside the venv (imageio-ffmpeg):
-nothing to install on the system, and it has h264_nvenc, loudnorm, sidechaincompress and ass.
+nothing to install on the system, and it has h264_nvenc, loudnorm, xfade and ass.
 """
 import json
 import os
@@ -149,18 +149,60 @@ def normalize_loudness(src, dst, lufs=-14, true_peak=-1.5, lra=11, end=None, tri
     """Any audio -> mono WAV at `lufs` (EBU R128), in two passes: the first measures, the
     second applies the gain LINEARLY (same length and timing, no "pumping" like one pass).
     end: cut the audio at this second (when the word times are known, e.g. edge-tts).
-    trim_silence: remove the silence at the start and end by level (when they are not known)."""
+    trim_silence: remove the silence at the start and end by level (when they are not known).
+    The trim is a pass of its own: chained with loudnorm in one filter graph, ffmpeg 7.1 aborts
+    ("Assertion best_input >= 0 failed") on some audios, e.g. one with no silence at either end."""
     cut = ["-t", round(end, 3)] if end else []
-    before = _trim_silence() if trim_silence else ""
+    trimmed = None
+    if trim_silence:
+        trimmed = Path(dst).with_name(Path(dst).stem + ".trim.wav")
+        ffmpeg(*cut, "-i", src, "-af", _trim_silence().rstrip(","), "-c:a", "pcm_s16le", trimmed)
+        src, cut = trimmed, []
     target = f"I={lufs}:TP={true_peak}:LRA={lra}"
-    report = ffmpeg(*cut, "-i", src, "-af", f"{before}loudnorm={target}:print_format=json", "-f", "null", "-")
+    report = ffmpeg(*cut, "-i", src, "-af", f"loudnorm={target}:print_format=json", "-f", "null", "-")
     measured = json.loads(re.findall(r"\{[^{}]*\}", report)[-1])
     ffmpeg(*cut, "-i", src, "-af",
-           f"{before}loudnorm={target}:measured_I={measured['input_i']}:measured_TP={measured['input_tp']}"
+           f"loudnorm={target}:measured_I={measured['input_i']}:measured_TP={measured['input_tp']}"
            f":measured_LRA={measured['input_lra']}:measured_thresh={measured['input_thresh']}"
            f":offset={measured['target_offset']}:linear=true",
            "-ar", SAMPLE_RATE, "-ac", 1, "-c:a", "pcm_s16le", dst)     # loudnorm outputs 192 kHz otherwise
+    if trimmed:
+        trimmed.unlink()
     return dst
+
+
+def loudness(src):
+    """Integrated loudness (LUFS) of an audio file."""
+    report = ffmpeg("-i", src, "-af", "loudnorm=print_format=json", "-f", "null", "-")
+    return float(json.loads(re.findall(r"\{[^{}]*\}", report)[-1])["input_i"])
+
+
+def music_bed(src, seconds, dst, lufs, eq_db=-4, fade_in=2.0, fade_out=3.0):
+    """Your music as the background of a video `seconds` long: looped (or cut) to that length,
+    a dip of eq_db around 1-4 kHz (the voice's frequencies: it is heard but does not cover the
+    words), fades at both ends, and a FIXED gain to `lufs`: it never goes up or down with the voice."""
+    shaped = Path(dst).with_name(Path(dst).stem + ".shaped.wav")
+    fade_out = min(fade_out, seconds / 2)
+    ffmpeg("-stream_loop", -1, "-i", src, "-t", round(seconds, 3), "-af",
+           f"equalizer=f=2000:t=o:w=2:g={eq_db},afade=t=in:d={fade_in},"
+           f"afade=t=out:st={seconds - fade_out:.3f}:d={fade_out}",
+           "-ar", SAMPLE_RATE, "-ac", 1, "-c:a", "pcm_s16le", shaped)
+    gain = lufs - loudness(shaped)
+    ffmpeg("-i", shaped, "-af", f"volume={gain:.2f}dB", "-c:a", "pcm_s16le", dst)
+    shaped.unlink()
+    return Path(dst)
+
+
+def mix_music(voice, bed, dst, lufs):
+    """Voice + music bed (both mono WAVs at SAMPLE_RATE) -> dst, normalized again to `lufs` (the
+    same linear two-pass loudnorm as the narration: no pumping). Replaces the voice's file."""
+    mixed = Path(dst).with_name(Path(dst).stem + ".raw.wav")
+    ffmpeg("-i", voice, "-i", bed, "-filter_complex", "[0:a][1:a]amix=inputs=2:normalize=0:duration=first",
+           "-ar", SAMPLE_RATE, "-ac", 1, "-c:a", "pcm_s16le", mixed)
+    normalize_loudness(mixed, dst, lufs)
+    mixed.unlink()
+    Path(voice).unlink()
+    return Path(dst)
 
 
 def wav_duration(path):

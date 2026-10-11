@@ -21,6 +21,9 @@ from llmkit import config
 from services.settings import CONFIG_FILE, load_settings  # noqa: F401  (CONFIG_FILE: used by LLMHub)
 
 RESERVED_KEYS = {"providers", "default", "unload_after_text_phase"}   # in `llm`, everything else is a node
+# How a node asks for data (schema=...): json_schema (the model's structured output; LM Studio has it)
+# or function_calling (as a tool call: for OpenRouter models without structured_outputs).
+STRUCTURED_METHODS = {"json_schema", "function_calling"}
 
 
 def _llm_settings(settings=None):
@@ -57,11 +60,27 @@ def model_for(node="default", settings=None, **overrides):
 
     options = {**node_settings(node, settings), **overrides}
     llm = _llm_settings(settings)
+    options.pop("structured_output", None)                # how to ask for data (structured_method), not a client option
+    options.pop("fallback", None)                         # the node used if this one fails (LLMHub.structured)
     provider_name = options.pop("provider")
     provider = _provider(llm, provider_name)
     if provider_name == "local":
         _check_downloaded(options["model"], provider["base_url"])
-    return ChatOpenAI(**{**provider, **options})          # node options win over the provider's
+    options = {**provider, **options}                     # node options win over the provider's
+    per_minute = options.pop("requests_per_minute", None)
+    if per_minute:                                        # waits before a call instead of a 429
+        from langchain_core.rate_limiters import InMemoryRateLimiter
+        options["rate_limiter"] = InMemoryRateLimiter(requests_per_second=per_minute / 60,
+                                                      check_every_n_seconds=0.2, max_bucket_size=1)
+    return ChatOpenAI(**options)
+
+
+def structured_method(node="default", settings=None):
+    """llm.<node>.structured_output (default json_schema): how with_structured_output asks for data."""
+    method = node_settings(node, settings).get("structured_output", "json_schema")
+    if method not in STRUCTURED_METHODS:
+        raise ValueError(f"llm.{node}.structured_output: {method!r} is not one of {sorted(STRUCTURED_METHODS)}")
+    return method
 
 
 def prepare(node="default", settings=None):

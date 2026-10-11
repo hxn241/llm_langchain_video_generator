@@ -4,6 +4,7 @@ the project's venv needs no torch. Each call loads its model, does the whole job
 
     align  (align_worker.py)  Whisper: the time of every word of some WAVs
     embed  (embed_worker.py)  SigLIP 2: how well each image matches a text
+    parallax (parallax_worker.py)  Depth Anything: photos -> 2.5D video segments
 
     result = run("align", {"model": ..., "items": [...]})
 

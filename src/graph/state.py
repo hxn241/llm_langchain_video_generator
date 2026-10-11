@@ -29,7 +29,8 @@ SectionRole = Literal["hook", "context", "tension", "development", "reveal", "co
 
 # ---------------------------------------------------------------- research
 class SearchQueries(BaseModel):
-    queries: list[str] = Field(min_length=1, description="Búsquedas de noticias, en español, distintas entre sí")
+    queries: list[str] = Field(min_length=1, max_length=10,   # a cap: small local models loop and never close the list
+                               description="Búsquedas de noticias, en español, distintas entre sí")
 
 
 class FactDraft(BaseModel):
@@ -38,12 +39,21 @@ class FactDraft(BaseModel):
 
 
 class FactsDraft(BaseModel):
-    facts: list[FactDraft] = Field(description="Los datos del artículo relevantes para el tema; [] si no hay")
+    facts: list[FactDraft] = Field(max_length=25, description="Los datos del artículo relevantes para el tema; [] si no hay")
 
 
-class Fact(TypedDict):
+class Fact(TypedDict, total=False):
     fact: str
     source_url: str
+    section: int              # deep_research: the outline section it was looked for (1-based)
+
+
+class SectionSearches(BaseModel):
+    web: list[str] = Field(min_length=1, max_length=3,
+                           description="1-3 búsquedas web en español (3-7 palabras), una por cosa que averiguar")
+    wikipedia: list[str] = Field(default_factory=list, max_length=3,
+                                 description="0-3 artículos de Wikipedia que lo explican, como 'es:Título' o "
+                                             "'en:Title' (el nombre del artículo, no una frase)")
 
 
 class Source(TypedDict, total=False):
@@ -59,7 +69,8 @@ class Angle(BaseModel):
     question: str = Field(description="La pregunta central que el vídeo responde al final y que hace seguir viéndolo")
     why: str = Field(description="Por qué engancharía a alguien que no sabe nada del tema")
     hook: str = Field(description="Primera frase del vídeo, máx. 15 palabras, basada en un hecho")
-    facts: list[int] = Field(default_factory=list, description="Números de los hechos que sostienen este enfoque")
+    facts: list[int] = Field(default_factory=list, max_length=15,
+                             description="Números de los hechos que sostienen este enfoque")
 
 
 class AnglesDraft(BaseModel):
@@ -82,13 +93,18 @@ class OutlineSectionDraft(BaseModel):
     goal: str = Field(description="Qué cuenta esta sección y por qué importa, en 1-2 frases")
     emotion: str = Field(description="Qué debe sentir el espectador aquí, en 1-3 palabras (curiosidad, "
                                      "sorpresa, indignación, alivio...)")
-    facts: list[int] = Field(default_factory=list, description="Números de los hechos que usa esta sección")
+    facts: list[int] = Field(default_factory=list, max_length=60,     # deep_research adds the ones it finds
+                             description="Números de los hechos que usa esta sección")
+    questions: list[str] = Field(default_factory=list, max_length=3,
+                                 description="Solo vídeos largos: 1-3 cosas concretas que hay que AVERIGUAR para "
+                                             "contar esta sección y que los hechos no dicen (antecedentes, cómo "
+                                             "funciona, quién es quién, cifras de contexto); [] si no hace falta")
 
 
 class OutlineDraft(BaseModel):
     title: str = Field(description="Título del vídeo: claro, atractivo, sin clickbait engañoso")
     angle: str = Field(description="El hilo conductor: la pregunta o idea central que recorre todo el vídeo")
-    sections: list[OutlineSectionDraft] = Field(min_length=2, description="Secciones en orden: la primera "
+    sections: list[OutlineSectionDraft] = Field(min_length=2, max_length=12, description="Secciones en orden: la primera "
                                                 "engancha y presenta el tema; la última concluye")
 
 
@@ -105,12 +121,10 @@ class Outline(BaseModel):
 # ------------------------------------------------------------------ script
 class SceneDraft(BaseModel):
     narration: str = Field(description="Lo que se narra en esta escena: 1-2 frases en español hablado")
-    on_screen_text: str | None = Field(default=None, description="Cifra o frase corta destacada en pantalla "
-                                                                 "(máx. 6 palabras), o null")
 
 
 class SectionDraft(BaseModel):
-    scenes: list[SceneDraft] = Field(min_length=1, description="Escenas de esta sección, en orden")
+    scenes: list[SceneDraft] = Field(min_length=1, max_length=20, description="Escenas de esta sección, en orden")
 
 
 class Scene(SceneDraft):
@@ -145,33 +159,70 @@ class Script(BaseModel):
         return sum(len(s.narration.split()) for s in self.scenes)
 
 
-# ------------------------------------------------------------ beats/visuals
-class BeatDraft(BaseModel):
-    start: str = Field(description="Las primeras 3-5 palabras del fragmento, copiadas EXACTAMENTE de la narración")
+# ------------------------------------------------------------ brief/beats/visuals
+class MetaphorDraft(BaseModel):
+    phrase: str = Field(description="La expresión figurada, copiada del guion (p. ej. 'la burbuja está a punto de estallar')")
+    show: str = Field(description="Qué se ve en su lugar, en español: cosas reales del universo visual, nunca la "
+                                  "metáfora literal (p. ej. 'grúas paradas sobre pisos a medio construir')")
+
+
+class BriefDraft(BaseModel):
+    universe: list[str] = Field(min_length=4, max_length=15,
+                                description="Objetos, lugares, personas y acciones FILMABLES de ESTE vídeo, incluido el "
+                                            "problema y las consecuencias de las que habla el guion, en INGLÉS y como se "
+                                            "buscarían en un banco de stock (1-3 sustantivos cada uno): 'for rent sign', "
+                                            "'hospital corridor', 'dry reservoir'")
+    avoid: list[str] = Field(max_length=10,
+                             description="Lo que NUNCA debe verse en este vídeo, en ESPAÑOL: lo que llevaría a otro tema "
+                                         "o a una lectura equivocada (p. ej. 'pompas de jabón', 'ciudades de otro país', "
+                                         "'gente sonriendo'). Nunca algo de lo que habla el guion")
+    metaphors: list[MetaphorDraft] = Field(default_factory=list, max_length=12,
+                                           description="Cada expresión figurada del guion y cómo se enseña; [] si no hay")
+    style: str = Field(description="Estilo común de las imágenes, en INGLÉS, 10-25 palabras: SOLO tipo de foto, luz, "
+                                   "paleta y encuadre, sin ningún objeto, lugar ni fondo (va al final de cada prompt)")
+
+
+class ShotDraft(BaseModel):
+    subject: str = Field(description="Qué se ve, en español, concreto (p. ej. 'sede del Banco de España en Madrid', "
+                                     "'pareja joven revisando facturas en la cocina')")
+    must_show: list[str] = Field(min_length=1, max_length=2,
+                                 description="1-2 cosas fotografiables que TIENEN que verse en ESTE plano, en español "
+                                             "(no las de los otros planos de la idea). Nunca cifras, textos ni ausencias")
+    queries: list[str] = Field(min_length=1, max_length=3,
+                               description="1-3 búsquedas en INGLÉS de ESTE plano para bancos de vídeo y fotos, de la "
+                                           "más concreta a la más genérica: 1-3 sustantivos de lo que se VE")
+    prompt: str = Field(description="Prompt en INGLÉS para generar la imagen si no se encuentra una buena: "
+                                    "40-70 palabras, sujeto, acción, lugar, luz, encuadre, terminado con el estilo")
+
+
+class IdeaDraft(BaseModel):
+    start: str = Field(description="Las primeras 3-5 palabras del tramo, copiadas EXACTAMENTE de la narración")
+    idea: str = Field(description="Qué cuenta este tramo, en una frase en español: la idea, no las palabras")
     kind: BeatKind = Field(description="entity = algo real y concreto con nombre propio (persona pública, "
                                        "institución, empresa, edificio, lugar, producto, evento); generic = algo "
                                        "real pero genérico que se puede filmar (gente, calles, objetos, acciones); "
                                        "data = una cifra o comparación; source = la noticia o el documento que se "
                                        "cita; abstract = una idea que no se puede filmar")
-    subject: str = Field(description="Qué se ve, en español, concreto (p. ej. 'sede del Banco de España en Madrid', "
-                                     "'pareja joven revisando facturas en la cocina')")
-    queries: list[str] = Field(min_length=1, max_length=3,
-                               description="2-3 búsquedas en INGLÉS para bancos de vídeo y fotos, de la más concreta "
-                                           "a la más genérica: 1-3 sustantivos de lo que se VE en el plano")
-    prompt: str = Field(description="Prompt en INGLÉS para generar la imagen si no se encuentra una buena: "
-                                    "40-80 palabras, sujeto, acción, lugar, luz, encuadre, terminado con el estilo")
+    must_not_show: list[str] = Field(default_factory=list, max_length=4,
+                                     description="0-4 cosas que en esta idea llevarían a una lectura equivocada, "
+                                                 "en español (además de lo prohibido en todo el vídeo)")
+    shots: list[ShotDraft] = Field(min_length=1, max_length=6,
+                                   description="Planos DISTINTOS de la misma idea (otra cosa, otro encuadre, nunca el "
+                                               "mismo con otras palabras), en el orden en que la narración dice las "
+                                               "cosas: tantos como necesita su tramo (los planos de la escena). Cada "
+                                               "uno con lo suyo que tiene que verse y sus búsquedas")
 
 
-class SceneBeatsDraft(BaseModel):
+class SceneIdeasDraft(BaseModel):
     scene: int = Field(description="Número de la escena")
-    beats: list[BeatDraft] = Field(min_length=1, description="Los fragmentos de la escena, en orden")
+    ideas: list[IdeaDraft] = Field(min_length=1, max_length=3, description="Las ideas de la escena (1-2), en orden")
 
 
 class BeatsDraft(BaseModel):
-    scenes: list[SceneBeatsDraft] = Field(description="Una entrada por cada escena pedida, en orden")
+    scenes: list[SceneIdeasDraft] = Field(description="Una entrada por cada escena pedida, en orden")
 
 
-class Beat(TypedDict):
+class Beat(TypedDict, total=False):
     id: int                   # 1..n over the whole video (visuals are keyed by it)
     scene: int
     word: int                 # index of its first word in the scene's narration
@@ -179,8 +230,12 @@ class Beat(TypedDict):
     seconds: float            # how long it is on screen
     text: str                 # the words it covers
     kind: str                 # BeatKind
-    subject: str
-    queries: list[str]        # stock searches, most concrete first (old beats.json: "query", one string)
+    idea: str                 # what this stretch tells (the parts of a split idea share it)
+    must_show: list[str]      # this shot's (old beats.json: the idea's)
+    must_not_show: list[str]  # the idea's; the brief's `avoid` counts for every beat
+    subject: str              # this shot of the idea (a split idea: another shot per part)
+    queries: list[str]        # this shot's stock searches, most concrete first (old beats.json: the idea's;
+                              # older ones: "query", one string)
     prompt: str
 
 
@@ -208,7 +263,7 @@ class SceneVisual(TypedDict, total=False):
     path: str                 # "" when kind is none
     kind: str                 # video | photo | generated | none (later: screenshot, chart)
     source: str               # the source that gave it: stock | generate
-    provider: str             # pexels | pixabay | hidream-o1
+    provider: str             # pexels | pixabay | nasa | wikimedia | manual | z-image-turbo
     prompt: str               # generated: the image prompt (English)
     query: str                # found: the search that found it
     score: int                # found: the vision model's 0-10
@@ -234,15 +289,21 @@ class VideoState(TypedDict, total=False):
     angle: dict                           # Angle.model_dump(): the one you chose (or wrote)
     outline: dict                         # Outline.model_dump()
     outline_feedback: str                 # why you rejected the outline (it is redone with it)
+    deep_researched: bool                 # long videos: deep_research already looked up every section
+    extra_urls: dict[int, list[str]]      # review_research: section -> your links, to be read
     script: dict                          # Script.model_dump()
     script_warnings: list[str]            # what write_script could not fix (e.g. length)
     review_ok: bool
     review_feedback: str
     revisions: int
     audio: dict[int, SceneAudio]          # scene id -> audio (+ word times, from align)
+    brief: dict                           # BriefDraft.model_dump(): the visual universe of the video
     beats: list[Beat]                     # what is shown and from which word
     visuals: dict[int, SceneVisual]       # beat id -> visual
+    visual_extras: dict[int, list[SceneVisual]]   # beat id -> more visuals that share its time (long
+                                          # videos: no photo longer than visuals.photo_max_seconds)
     visual_warnings: list[str]
+    montage: dict[int, list[dict]]        # beat id -> what assemble uses [{"path", "kind"}] (<run>/montaje/)
     subtitles_path: str
     video_path: str
     metadata: dict                        # title, description, tags, synthetic_media

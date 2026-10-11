@@ -2,32 +2,46 @@
 
 For each beat (graph/nodes/beats.py: what must be seen, from which word):
 1. Candidates from the sources of its kind (config.yaml: visuals.sources). Sources today:
-       stock   Pexels / Pixabay videos and photos, searched with each of the beat's queries
-               (most concrete first; the results interleaved). Searches are cached in
-               <run>/visuals/searches.json.
-   A kind without sources goes straight to step 3.
+       stock       Pexels / Pixabay videos and photos
+       nasa        NASA photos (space, missions, the Earth from orbit; public domain)
+       wikimedia   Wikimedia Commons photos of real, named things (free licences, with attribution)
+   each searched with every query of the beat (most concrete first; the results interleaved), and
+   the sources interleaved too, so each one gets its share of visuals.max_candidates. Searches are
+   cached in <run>/visuals/searches.json. A kind without sources goes straight to step 3.
 2. Ranking in two steps:
    a. SigLIP 2 (services/workers.py -> embed_worker.py) compares the beat (query + subject)
       with every candidate's thumbnail; the best visuals.top_k go on.
    b. The vision model (llm.visuals) sees them in ONE numbered grid, cropped like the frame,
       with the words being said, and picks one (prompts/visual_choice.md). Below
       visuals.min_score, none is used.
-3. Beats without a good candidate: the LLM is unloaded and HiDream-O1 (ComfyUI) generates
-   the beat's prompt. Same prompt + same seed -> the file is reused, not regenerated.
+3. Beats without a good candidate: their prompt is generated (visuals.generator): with a paid
+   model through OpenRouter (services/image_api.py) or, locally, with Z-Image Turbo in ComfyUI
+   (the LLM is unloaded first). If OpenRouter fails, the rest go to ComfyUI. Same prompt and
+   settings -> the file is reused, not regenerated.
 
-Manual mode: beats of kind "manual" (your files, graph/manual.py) are used as they are.
+Long beats (visuals.photo_max_seconds: only long videos; shorts have no limit): a beat longer
+than that is judged first among its VIDEOS only; if one is good it fills the beat. Otherwise a
+photo never stays on screen longer than the limit: the beat gets more visuals that share its
+time (state["visual_extras"], montaje/05b.jpg...): another good candidate or, failing that, its
+prompt generated again with another framing.
+
+Manual mode: beats of kind "manual" (your [file] marks in guion.md, graph/manual.py) are used as they are.
 A clip or photo is used once per video. Files go to <run>/visuals/ (thumbs/ has the
-candidates' previews; choices.json, what was picked for each beat and why).
+candidates' previews; choices.json, what was picked for each beat and why). At the end, a copy
+of each beat's visual goes to <run>/montaje/ in order (01.mp4, 02.jpg...: graph/montage.py),
+which is what assemble uses after the review_visuals pause.
 To add a source: a function (beat, orientation, options) -> candidates, in SOURCES.
 """
 import hashlib
 import itertools
 import json
+import math
 
-from graph import manual
+from graph import manual, montage
+from graph.nodes.beats import plain
 from graph.state import Script, VisualChoice
 from prompts import load_prompt
-from services import comfy, contact_sheet, stock, workers
+from services import comfy, contact_sheet, image_api, stock, workers
 from services.settings import load_settings, runs_dir
 
 NODE = "visuals"
@@ -40,6 +54,11 @@ GRAPHIC_WORDS = {"chart", "charts", "graph", "graphs", "graphic", "infographic",
                  "arrow", "arrows", "pie", "percent", "percentage", "symbol", "question",
                  "concept", "illustration", "animation", "3d", "render", "cartoon", "vector", "logo"}
 SEARCH_VERSION = 2            # part of the cache key: bump it when what a search returns changes
+# A long beat's extra generated images: the same prompt with another framing, so they differ
+REFRAMES = ["Another view of the same moment: a wide shot showing the whole place.",
+            "Another view of the same moment: a close-up of one telling detail.",
+            "Another view of the same moment: a medium shot from a different angle."]
+LETTERS = "bcdefgh"           # montaje/05b, 05c...: a beat's extra files
 
 
 def queries_of(beat):
@@ -49,39 +68,52 @@ def queries_of(beat):
     return [q for q in queries if not GRAPHIC_WORDS & set(q.lower().replace("-", " ").split())]
 
 
-def stock_candidates(beat, orientation, options, cache):
-    """Every query of the beat, videos before photos; the results are interleaved query by query
-    so the generic last query also gets a place among the first max_candidates."""
-    per_query = []
-    providers = ",".join(stock.available(options["stock_providers"]))   # a new key in the .env -> searched again
-    for query in queries_of(beat):
-        found = []
-        for kind in ("video", "photo"):
-            key = f"v{SEARCH_VERSION}|{providers}|{kind}|{orientation}|{options.get('per_page', 8)}|{query.lower()}"
-            if key not in cache:
-                cache[key] = stock.search(query, kind, orientation, options["stock_providers"],
-                                          options.get("per_page", 8))
-            found += [dict(c, query=query) for c in cache[key]]
-        per_query.append(found)
-    mixed = [c for group in itertools.zip_longest(*per_query) for c in group if c]
-    for c in mixed:
-        c["source"], c["key"] = "stock", f"{c['provider']}_{c['id']}"
-    return mixed
+def interleave(lists):
+    """[a1, a2], [b1] -> [a1, b1, a2]."""
+    return [x for group in itertools.zip_longest(*lists) for x in group if x]
 
 
-SOURCES = {"stock": stock_candidates}
+def provider_candidates(name, providers):
+    """A source made of providers of services/stock.py."""
+    def candidates(beat, orientation, options, cache):
+        """Every query of the beat, videos before photos; the results are interleaved query by query
+        so the generic last query also gets a place among the first max_candidates."""
+        per_query = []
+        wanted = providers or options["stock_providers"]
+        searched = ",".join(stock.available(wanted))     # a new key in the .env -> searched again
+        for query in queries_of(beat):
+            found = []
+            for kind in ("video", "photo"):
+                key = f"v{SEARCH_VERSION}|{searched}|{kind}|{orientation}|{options.get('per_page', 8)}|{query.lower()}"
+                if key not in cache:
+                    cache[key] = stock.search(query, kind, orientation, wanted, options.get("per_page", 8))
+                found += [dict(c, query=query) for c in cache[key]]
+            per_query.append(found)
+        mixed = interleave(per_query)
+        for c in mixed:
+            c["source"], c["key"] = name, f"{c['provider']}_{c['id']}"
+        return mixed
+    return candidates
+
+
+SOURCES = {"stock": provider_candidates("stock", None),           # visuals.stock_providers
+           "nasa": provider_candidates("nasa", ["nasa"]),
+           "wikimedia": provider_candidates("wikimedia", ["wikimedia"])}
 
 
 def gather(beat, orientation, options, folder, cache):
     """Candidates of every source of the beat's kind, with their thumbnail on disk."""
     if not queries_of(beat):
         return []
-    found = {}
+    per_source = []
     for name in options.get("sources", {}).get(beat["kind"], []):
         try:
-            found |= {c["key"]: c for c in SOURCES[name](beat, orientation, options, cache) if c["key"] not in found}
+            per_source.append(SOURCES[name](beat, orientation, options, cache))
         except Exception as e:                                   # one source failing does not stop the rest
             print(f"  · visuals: source {name!r} failed for beat {beat['id']}: {e}")
+    found = {}
+    for c in interleave(per_source):                             # each source gets its share of places
+        found.setdefault(c["key"], c)
     ready = []
     for c in list(found.values())[:options.get("max_candidates", 12)]:
         try:
@@ -93,21 +125,121 @@ def gather(beat, orientation, options, folder, cache):
 
 
 # ----------------------------------------------------------------- choose
-def choose(hub, beat, scene, candidates, aspect):
+def choose(hub, beat, scene, candidates, aspect, brief=None):
     """The vision model sees the candidates in a grid -> (candidate or None, VisualChoice)."""
     labels = ", ".join(f"{n} {'vídeo' if c['kind'] == 'video' else 'foto'}" for n, c in enumerate(candidates, start=1))
+    avoid = list(dict.fromkeys(beat.get("must_not_show", []) + (brief or {}).get("avoid", [])))
     text = (f"Narración de la escena: \"{scene.narration}\"\n"
             f"Fragmento que se está diciendo mientras se ve la imagen: \"{beat['text']}\"\n"
-            f"Qué debería verse: {beat['subject']}\n"
-            f"Hay {len(candidates)} imágenes numeradas ({labels}). ¿Cuál muestra mejor lo que se dice en el fragmento?")
+            + (f"La idea que cuenta: {beat['idea']}\n" if beat.get("idea") else "")
+            + f"Qué debería verse: {beat['subject']}\n"
+            + (f"Tiene que verse: {', '.join(beat['must_show'])}\n" if beat.get("must_show") else "")
+            + (f"NO debe verse: {', '.join(avoid)}\n" if avoid else "")
+            + f"Hay {len(candidates)} imágenes numeradas ({labels}). ¿Cuál cuenta mejor la idea del fragmento?")
     sheet = contact_sheet.grid([open(c["thumb_path"], "rb").read() for c in candidates], aspect)
     choice = hub.look(load_prompt("visual_choice"), text, [sheet], schema=VisualChoice, node=NODE)
     return (candidates[choice.best - 1] if 1 <= choice.best <= len(candidates) else None), choice
 
 
+def pick(hub, beat, scene, pool, aspect, brief, options, videos_first=False):
+    """The vision model's choice among the best of `pool` -> (candidate or None, VisualChoice, good).
+    videos_first: it first sees only the videos (a long beat is better filled by a clip)."""
+    top_k, min_score = options.get("top_k", 8), options.get("min_score", 6)
+    best = pool[:top_k]
+    if videos_first:
+        videos = [c for c in pool if c["kind"] == "video"][:top_k]
+        if videos:
+            picked, choice = choose(hub, beat, scene, videos, aspect, brief)
+            good = picked is not None and choice.score >= min_score
+            if good or {c["key"] for c in videos} == {c["key"] for c in best}:
+                return picked, choice, good                    # the same grid again would be wasted
+    picked, choice = choose(hub, beat, scene, best, aspect, brief)
+    return picked, choice, picked is not None and choice.score >= min_score
+
+
+def found_visual(picked, choice, path):
+    return {"path": str(path), "kind": picked["kind"], "source": picked["source"],
+            "provider": picked["provider"], "query": picked["query"], "score": choice.score,
+            "source_url": picked["page_url"], "author": picked["author"], "license": picked.get("license"),
+            "ai_generated": picked["ai_generated"],
+            **({"duration": picked["duration"]} if picked["kind"] == "video" else {})}
+
+
+def parts_of(beat, photo_max):
+    """How many visuals a beat needs when it is not a video: 1, or more if a photo would stay
+    longer than photo_max seconds (long videos only)."""
+    if not photo_max or beat.get("seconds", 0) <= photo_max:
+        return 1
+    return math.ceil(beat["seconds"] / photo_max)
+
+
+def write_credits(run_folder, chosen, extras=None):
+    """<run>/creditos.txt: who made each image and video found, with its licence, to paste into the
+    video's description (Wikimedia's CC BY / CC BY-SA require it; the rest are a courtesy)."""
+    lines, seen = [], set()
+    every = [v for beat_id in sorted(chosen) for v in [chosen[beat_id], *(extras or {}).get(beat_id, [])]]
+    for v in every:
+        if not v.get("source_url") or v["source_url"] in seen:
+            continue
+        seen.add(v["source_url"])
+        lines.append(" · ".join(x for x in (v.get("author") or v["provider"], v.get("license"), v["source_url"]) if x))
+    (run_folder / "creditos.txt").write_text("Imágenes y vídeos:\n" + "\n".join(lines) + "\n", encoding="utf-8")
+
+
 def seed_for(run_id, beat_id):
     """The same seed for a beat on every run of it: an unchanged prompt gives the same image."""
     return int(hashlib.md5(f"{run_id}-{beat_id}".encode()).hexdigest()[:8], 16)
+
+
+def generate(beats, run_id, folder, width, height, settings):
+    """The beats without a good candidate -> {beat id: generated visual}. visuals.generator:
+    openrouter (paid, visuals.generate_model) or comfy (Z-Image, local). If OpenRouter fails (no
+    credit, an error...), the rest go to ComfyUI. Same prompt and settings -> the file is reused.
+    A long beat's extra image comes as the beat with "slot" (its key in the result: (id, n)) and
+    "suffix" (b, c...: in its file name and seed)."""
+    options = settings["visuals"]
+    model, resolution = options.get("generate_model"), options.get("generate_resolution")
+    paid = options.get("generator", "comfy") == "openrouter"
+    out, spent, comfy_on = {}, 0.0, False
+    try:
+        for n, b in enumerate(beats, start=1):
+            path = provider = None
+            name = f"beat_{b['id']:03d}{b.get('suffix', '')}"
+            if paid:
+                key = hashlib.md5(f"{b['prompt']}|{model}|{resolution}|{width}x{height}".encode()).hexdigest()[:8]
+                path = next(folder.glob(f"{name}_{key}.*"), None)
+                provider = model
+                if not path:
+                    try:
+                        path, cost = image_api.generate(b["prompt"], folder / f"{name}_{key}",
+                                                        width, height, model, resolution)
+                        spent += cost
+                    except Exception as e:                    # no credit, rate limit...: the rest locally
+                        print(f"  ⚠️  visuals: {model} falló ({str(e)[:200]}); el resto se genera con ComfyUI")
+                        paid, path = False, None
+            if not path:
+                if not comfy_on:
+                    if not comfy.running(settings):
+                        raise RuntimeError(f"{len(beats) - n + 1} fragments must be generated and ComfyUI is not "
+                                           "running. Start it:\n  cd C:\\Users\\hexen\\ComfyUI; "
+                                           ".venv\\Scripts\\python.exe main.py --listen 127.0.0.1 --port 8188")
+                    comfy_on = True
+                seed = seed_for(run_id, f"{b['id']}{b.get('suffix', '')}" if b.get("suffix") else b["id"])
+                key = hashlib.md5(f"{b['prompt']}|{seed}|{width}x{height}|{settings.get('comfy', {})}"
+                                  .encode()).hexdigest()[:8]
+                path, provider = folder / f"{name}_{key}.png", "z-image-turbo"
+                if not path.exists():
+                    comfy.generate(b["prompt"], path, width, height, seed=seed, settings=settings)
+            print(f"  · visuals: generada {n}/{len(beats)} (fragmento {b['id']}{b.get('suffix', '')}, "
+                  f"{b['kind']}, {provider})")
+            out[b.get("slot", b["id"])] = {"path": str(path), "kind": "generated", "source": "generate",
+                                           "provider": provider, "prompt": b["prompt"], "ai_generated": True}
+    finally:
+        if comfy_on:
+            comfy.free(settings)
+        if spent:
+            print(f"  · visuals: imágenes generadas en OpenRouter: {spent:.2f} $")
+    return out
 
 
 # ------------------------------------------------------------------- node
@@ -122,7 +254,7 @@ def make_visuals(hub, settings=None):
         orientation = "portrait" if height > width else "landscape"
         script = Script.model_validate(state["script"])
         scenes = {s.id: s for s in script.scenes}
-        beats = state["beats"]
+        beats = [plain(b) for b in state["beats"]]           # not the old beat_images pause's files
         folder = runs_dir(run_id) / "visuals"
         (folder / "thumbs").mkdir(parents=True, exist_ok=True)
 
@@ -130,7 +262,8 @@ def make_visuals(hub, settings=None):
         cache_file = folder / "searches.json"
         cache = json.loads(cache_file.read_text(encoding="utf-8")) if cache_file.exists() else {}
         try:
-            candidates = {b["id"]: gather(b, orientation, options, folder / "thumbs", cache) for b in beats}
+            candidates = {b["id"]: [] if b["kind"] == "manual" else             # yours: not searched
+                          gather(b, orientation, options, folder / "thumbs", cache) for b in beats}
         finally:
             cache_file.write_text(json.dumps({k: v for k, v in cache.items() if v}, ensure_ascii=False),
                                   encoding="utf-8")       # empty results are not kept: maybe a provider failed
@@ -150,51 +283,64 @@ def make_visuals(hub, settings=None):
         chosen = {b["id"]: {"path": b["path"], "kind": manual.kind_of(b["path"]), "source": "manual",
                             "provider": "manual", "ai_generated": False}
                   for b in beats if b["kind"] == "manual"}
-        used, log = set(), {}
+        photo_max = (options.get("photo_max_seconds") or {}).get(video_format)   # long videos only
+        brief, aspect = state.get("brief"), width / height
+        used, log, extras = set(), {}, {}
         for b in with_candidates:
-            best = sorted((c for c in candidates[b["id"]] if c["key"] not in used and c["similarity"] > -1),
-                          key=lambda c: -c["similarity"])[:options.get("top_k", 8)]
-            if not best:
+            pool = sorted((c for c in candidates[b["id"]] if c["key"] not in used and c["similarity"] > -1),
+                          key=lambda c: -c["similarity"])
+            if not pool:
                 continue
-            picked, choice = choose(hub, b, scenes[b["scene"]], best, width / height)
-            good = picked is not None and choice.score >= options.get("min_score", 6)
-            log[b["id"]] = {"text": b["text"], "subject": b["subject"], "queries": queries_of(b),
+            parts = parts_of(b, photo_max)
+            picked, choice, good = pick(hub, b, scenes[b["scene"]], pool, aspect, brief, options,
+                                        videos_first=parts > 1)
+            log[b["id"]] = {"text": b["text"], "idea": b.get("idea"), "subject": b["subject"], "queries": queries_of(b),
                             "query": picked["query"] if picked else None, "score": choice.score, "reason": choice.reason,
-                            "picked": picked["page_url"] if picked else None, "used": good}
+                            "picked": picked["page_url"] if picked else None, "used": good,
+                            **({"author": picked["author"], "license": picked.get("license")} if good else {})}
             print(f"  · visuals: fragmento {b['id']} ({b['kind']}) -> "
                   + (f"{picked['source']} {picked['kind']} · {choice.score}/10" if good else
                      f"nada encaja ({choice.score}/10) -> se genera"))
-            if good:
-                path = stock.download(picked, width, height, folder)
-                used.add(picked["key"])
-                chosen[b["id"]] = {"path": str(path), "kind": picked["kind"], "source": picked["source"],
-                                   "provider": picked["provider"], "query": picked["query"], "score": choice.score,
-                                   "source_url": picked["page_url"], "author": picked["author"],
-                                   "ai_generated": picked["ai_generated"],
-                                   **({"duration": picked["duration"]} if picked["kind"] == "video" else {})}
+            if not good:
+                continue
+            used.add(picked["key"])
+            chosen[b["id"]] = found_visual(picked, choice, stock.download(picked, width, height, folder))
+            # a long beat filled by a photo: more good candidates share its time (the rest, generated below)
+            for k in range(1, parts if picked["kind"] != "video" else 1):
+                rest = [c for c in pool if c["key"] not in used]
+                if not rest:
+                    break
+                more, more_choice, more_good = pick(hub, b, scenes[b["scene"]], rest, aspect, brief, options)
+                if not more_good:
+                    break
+                used.add(more["key"])
+                extras.setdefault(b["id"], []).append(
+                    found_visual(more, more_choice, stock.download(more, width, height, folder)))
+                log[b["id"]].setdefault("extras", []).append({"picked": more["page_url"], "score": more_choice.score})
+                print(f"  · visuals: fragmento {b['id']}{LETTERS[k - 1]} -> {more['source']} {more['kind']} · "
+                      f"{more_choice.score}/10")
         (folder / "choices.json").write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
-        hub.unload_local_models(verbose=False)                  # the LLM out: VRAM for HiDream
+        write_credits(runs_dir(run_id), chosen, extras)
+        hub.unload_local_models(verbose=False)                  # the LLM out: VRAM for Z-Image
 
-        # 3. the rest: generated
+        # 3. the rest: generated (and the extra images long beats still need, with another framing)
         rest = [b for b in beats if b["id"] not in chosen]
+        for b in beats:
+            if b["kind"] == "manual" or chosen.get(b["id"], {}).get("kind") == "video":
+                continue
+            have = len(extras.get(b["id"], []))
+            rest += [dict(b, slot=(b["id"], k), suffix=LETTERS[k - 1],
+                          prompt=f"{b['prompt']} {REFRAMES[(k - 1) % len(REFRAMES)]}")
+                     for k in range(1 + have, parts_of(b, photo_max))]
         if rest:
-            if not comfy.running(settings):
-                raise RuntimeError(f"{len(rest)} fragments must be generated and ComfyUI is not running. Start it:\n"
-                                   "  cd C:\\Users\\hexen\\ComfyUI; .venv\\Scripts\\python.exe main.py "
-                                   "--listen 127.0.0.1 --port 8188")
-            try:
-                for n, b in enumerate(rest, start=1):
-                    seed = seed_for(run_id, b["id"])
-                    key = hashlib.md5(f"{b['prompt']}|{seed}|{width}x{height}|{settings.get('comfy', {})}"
-                                      .encode()).hexdigest()[:8]
-                    path = folder / f"beat_{b['id']:03d}_{key}.png"
-                    if not path.exists():
-                        comfy.generate(b["prompt"], path, width, height, seed=seed, settings=settings)
-                    print(f"  · visuals: generada {n}/{len(rest)} (fragmento {b['id']}, {b['kind']})")
-                    chosen[b["id"]] = {"path": str(path), "kind": "generated", "source": "generate",
-                                       "provider": "hidream-o1", "prompt": b["prompt"], "ai_generated": True}
-            finally:
-                comfy.free(settings)
-        return {"visuals": chosen, "visual_warnings": []}
+            made = generate(rest, run_id, folder, width, height, settings)
+            for slot, visual in made.items():
+                if isinstance(slot, tuple):
+                    extras.setdefault(slot[0], []).append(visual)
+                else:
+                    chosen[slot] = visual
+        folder = montage.write(runs_dir(run_id), beats, chosen, extras)   # in order, to check before assemble
+        print(f"  · visuals: todo en {folder} (lista.md: qué va en cada número)")
+        return {"visuals": chosen, "visual_extras": extras, "visual_warnings": []}
 
     return visuals

@@ -58,6 +58,7 @@ def outline_markdown(outline, indent=""):
         lines.append(f"{n}. [{ROLE_LABELS.get(s.role, s.role)}] {s.title}" + (f"  (~{words} palabras)" if words else ""))
         lines.append(f"   {s.goal}  · emoción: {s.emotion}"
                      + (f"  [hechos: {', '.join(map(str, s.facts))}]" if s.facts else ""))
+        lines += [f"   ? {q}" for q in getattr(s, "questions", None) or []]
     return "\n".join(indent + line if line else line for line in lines) + "\n"
 
 
@@ -83,8 +84,6 @@ def script_markdown(script: Script):
             section = s.section
             lines += [f"## Sección {section}", ""]
         lines += [f"### Escena {s.id}" + (" (gancho)" if s.id == 1 else ""), "", s.narration, ""]
-        if s.on_screen_text:
-            lines += [f"- En pantalla: **{s.on_screen_text}**", ""]
     if script.sources:
         lines += ["## Fuentes", ""] + [f"- {url}" for url in script.sources]
     return "\n".join(lines) + "\n"

@@ -17,7 +17,8 @@ def describe_error(e):
     if "free-models-per-day" in text:
         return "OpenRouter's daily free-model limit is used up (it resets at 00:00 UTC)."
     if "429" in text:
-        return "The model is saturated (429). Try again in a few minutes or change MODEL_NAME in the .env."
+        return ("The model is saturated (429). Try again in a few minutes, or change that node's model "
+                "(config.yaml: llm.<node>, or its `fallback`).")
     if "503" in text or "overloaded" in text:
         return "The model provider is overloaded (503). Try again later."
     return f"{type(e).__name__}: {text[:200]}"

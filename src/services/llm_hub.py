@@ -95,6 +95,7 @@ class LLMHub:
         if temperature is not None:
             model_options["temperature"] = temperature
         self._node_models = {}
+        self._failed_nodes = set()      # nodes whose model failed in this run: they use their fallback
         self._from_config = model is None and llm.CONFIG_FILE.exists()   # models of config.yaml
         if model is not None:
             self.model = model
@@ -117,6 +118,35 @@ class LLMHub:
         if node not in self._node_models:
             self._node_models[node] = llm.model_for(node)
         return self._node_models[node]
+
+    def structured(self, schema, node=None):
+        """The model of `node` answering with an object of `schema`, asked as config.yaml says
+        (llm.<node>.structured_output: json_schema or function_calling).
+
+        llm.<node>.fallback: another node (e.g. a local model) used when this one fails (a free
+        OpenRouter model saturated: 429, its daily limit...). After the first failure the rest of
+        this run goes straight to the fallback (no more waits on a saturated model)."""
+        model = self.model_for(node)
+        if not (self._from_config or node is not None):
+            return model.with_structured_output(schema)
+        primary = model.with_structured_output(schema, method=llm.structured_method(node or "default"))
+        backup_node = llm.node_settings(node or "default").get("fallback")
+        if not backup_node:
+            return primary
+        backup = self.structured(schema, backup_node)
+
+        def call(inputs):
+            if node not in self._failed_nodes:
+                try:
+                    return primary.invoke(inputs)
+                except Exception as e:                       # anything: the run goes on with the fallback
+                    print(f"  · {node}: {model.model_name} falló ({describe_error(e)[:160]}); "
+                          f"sigo con {backup_node} ({llm.node_settings(backup_node)['model']})")
+                    self._failed_nodes.add(node)
+            self.prepare(backup_node)                        # e.g. loads the local model in LM Studio
+            return backup.invoke(inputs)
+
+        return RunnableLambda(call)
 
     def prepare(self, node=None):
         """Right before calling the model of `node`: loads it in LM Studio as config.yaml says
@@ -153,7 +183,7 @@ class LLMHub:
         # Loads the model as config.yaml says on EVERY call (not now: building a graph must not load models)
         prepare = RunnableLambda(lambda inputs: (self.prepare(node), inputs)[1])
         if schema:
-            return prepare | prompt | model.with_structured_output(schema)
+            return prepare | prompt | self.structured(schema, node)
         return prepare | prompt | model | StrOutputParser()
 
     def look(self, system, text, images, schema=None, node=None):
@@ -162,10 +192,9 @@ class LLMHub:
         content = [{"type": "text", "text": text}] + [
             {"type": "image_url", "image_url": {"url": _data_url(image)}} for image in images]
         self.prepare(node)
-        model = self.model_for(node)
         if schema:
-            return model.with_structured_output(schema).invoke([SystemMessage(system), HumanMessage(content)])
-        return model.invoke([SystemMessage(system), HumanMessage(content)]).text
+            return self.structured(schema, node).invoke([SystemMessage(system), HumanMessage(content)])
+        return self.model_for(node).invoke([SystemMessage(system), HumanMessage(content)]).text
 
     def extract(self, text, schema, instructions="Extrae los datos del texto.", node=None):
         """Text -> the fields of `schema` (classify, extract data...)."""
