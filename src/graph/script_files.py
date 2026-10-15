@@ -9,6 +9,7 @@ from graph.state import AnglesDraft, Outline, Script
 
 ROLE_LABELS = {"hook": "gancho", "context": "contexto", "tension": "tensión", "development": "desarrollo",
                "reveal": "revelación", "conclusion": "conclusión"}
+TYPE_LABELS = {"news": "noticia", "explainer": "explicativo (atemporal, no es una noticia)"}
 
 
 def _write_json(path, model):
@@ -63,11 +64,11 @@ def outline_markdown(outline, indent=""):
 
 
 # ------------------------------------------------------------------ script
-def save_script(script: Script, folder):
-    """Writes script.json and script.md; returns their paths."""
+def save_script(script: Script, folder, review=None):
+    """Writes script.json and script.md (with review_script's review, if given); returns their paths."""
     json_path, md_path = folder / "script.json", folder / "script.md"
     _write_json(json_path, script)
-    md_path.write_text(script_markdown(script), encoding="utf-8")
+    md_path.write_text(script_markdown(script, review), encoding="utf-8")
     return json_path, md_path
 
 
@@ -76,7 +77,7 @@ def load_script(folder):
     return Script.model_validate_json((folder / "script.json").read_text(encoding="utf-8"))
 
 
-def script_markdown(script: Script):
+def script_markdown(script: Script, review=None):
     lines = [f"# {script.title}", "", f"{script.word_count()} palabras · {len(script.scenes)} escenas", ""]
     section = None
     for s in script.scenes:
@@ -84,6 +85,26 @@ def script_markdown(script: Script):
             section = s.section
             lines += [f"## Sección {section}", ""]
         lines += [f"### Escena {s.id}" + (" (gancho)" if s.id == 1 else ""), "", s.narration, ""]
+    if review:
+        lines += review_markdown(review)
     if script.sources:
         lines += ["## Fuentes", ""] + [f"- {url}" for url in script.sources]
     return "\n".join(lines) + "\n"
+
+
+def where(scene):
+    return "Todo el vídeo" if scene == 0 else f"Escena {scene}"
+
+
+def review_markdown(review):
+    """review_script's review (graph/nodes/review_script.py) as lines of script.md."""
+    lines = ["## Revisión", "", review.get("summary") or "Sin problemas.", ""]
+    if review.get("dubious"):
+        lines += ["### Hechos dudosos (compruébalos: el guion los usa)", ""]
+        lines += [f"- Hecho {d['fact']}: \"{d['text']}\" — {d['why']}" + (f" ({d['source_url']})" if d.get("source_url") else "")
+                  for d in review["dubious"]] + [""]
+    if review.get("issues"):
+        lines += ["### Notas del editor", ""]
+        lines += [f"- {where(i['scene'])}{' ⚠️' if i['serious'] else ''}: {i['problem']} → {i['fix']}"
+                  for i in review["issues"]] + [""]
+    return lines

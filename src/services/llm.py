@@ -66,6 +66,8 @@ def model_for(node="default", settings=None, **overrides):
     provider = _provider(llm, provider_name)
     if provider_name == "local":
         _check_downloaded(options["model"], provider["base_url"])
+    if "openrouter.ai" in provider.get("base_url", ""):  # usage.cost in every answer (services/costs.py)
+        options["extra_body"] = {**options.get("extra_body", {}), "usage": {"include": True}}
     options = {**provider, **options}                     # node options win over the provider's
     per_minute = options.pop("requests_per_minute", None)
     if per_minute:                                        # waits before a call instead of a 429
@@ -73,6 +75,13 @@ def model_for(node="default", settings=None, **overrides):
         options["rate_limiter"] = InMemoryRateLimiter(requests_per_second=per_minute / 60,
                                                       check_every_n_seconds=0.2, max_bucket_size=1)
     return ChatOpenAI(**options)
+
+
+def caches_prompts(node="default", settings=None):
+    """True for Anthropic models (OpenRouter ids anthropic/...): their system prompt goes marked with
+    cache_control, so the calls that repeat it within 5 minutes pay 10 % of it (the first one, 125 %).
+    It only caches from 512 tokens on (Sonnet 5.5, Haiku 5.5); a shorter prompt just is not cached."""
+    return str(node_settings(node, settings).get("model", "")).startswith("anthropic/")
 
 
 def structured_method(node="default", settings=None):

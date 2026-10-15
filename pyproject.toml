@@ -22,6 +22,7 @@ dependencies = [
     "requests",
     "ddgs",                        # DuckDuckGo search (SEARCH_PROVIDER=duckduckgo)
     "trafilatura",                 # the text of a news article, without menus or ads
+    "feedparser",                  # RSS/Atom feeds of scripts/find_topics.py
     # media
     "imageio-ffmpeg",              # ffmpeg 7.1 inside the venv (h264_nvenc, loudnorm, sidechaincompress, ass)
     "edge-tts>=7",                 # voice.mode=edge (predefined voices, for tests)

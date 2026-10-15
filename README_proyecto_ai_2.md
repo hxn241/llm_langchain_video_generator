@@ -1,10 +1,18 @@
-# 🎬 AI News Video Generator
+# 🎬 Datazo — generador de vídeos de ciencia y tecnología
 
-Pipeline multiagente en Python (LangGraph) que selecciona noticias de **tecnología e IA**, genera un vídeo narrado con imágenes y clips sincronizados con la voz, y lo sube a YouTube tras una revisión humana.
+Pipeline multiagente en Python (LangGraph) que busca un tema de **ciencia y tecnología**, lo investiga, escribe el guion, lo narra con una voz clonada, elige o genera las imágenes sincronizadas con cada palabra, monta el vídeo y lo deja listo para subir a YouTube. Se para en cada decisión importante para que la tome una persona.
 
-Todo corre **en local** sobre una **RTX 5070 (12 GB)**, incluido el LLM (LM Studio). Solo salen a internet las APIs de stock, la subida a YouTube y, opcionalmente, OpenRouter para algún nodo concreto.
+Es el motor del canal **Datazo**: cada vídeo gira alrededor de un dato que sorprende y lo explica hasta que se entiende.
 
-> **Filosofía:** la IA hace el trabajo pesado (buscar, documentarse, redactar, montar); el criterio y la voz son humanos. Esto es lo que mantiene el canal dentro de la política de "contenido no auténtico" de YouTube y lo que da calidad.
+> **Filosofía:** la IA hace el trabajo pesado (buscar, documentarse, redactar, montar); el criterio es humano, en cada pausa. Eso mantiene el canal dentro de la política de "contenido no auténtico" de YouTube y es lo que da calidad.
+
+**Dónde corre cada cosa** (una RTX 5070 de 12 GB):
+
+| Local (gratis) | Nube |
+|---|---|
+| Voz (Qwen3-TTS), tiempos de cada palabra (Whisper), filtro de imágenes (SigLIP 2), imágenes generadas (Z-Image Turbo en ComfyUI), 2.5D (Depth Anything), montaje (ffmpeg + NVENC) | Texto: Claude Sonnet 5.5 en OpenRouter (de pago); extraer hechos: Claude Haiku 5.5. Juez de imágenes: Gemma 4 31B en OpenRouter. Búsquedas (Tavily o DuckDuckGo), Wikipedia, bancos de imágenes, YouTube |
+
+Coste estimado de un vídeo largo (5 min): **~0,9–1,2 $** (todo el texto y el juez; la voz y las imágenes generadas en local no cuestan nada). El gasto real de cada run queda en `<run>/costes.md`, por nodo.
 
 ---
 
@@ -13,25 +21,36 @@ Todo corre **en local** sobre una **RTX 5070 (12 GB)**, incluido el LLM (LM Stud
 1. [Formato del vídeo](#1-formato-del-vídeo)
 2. [Stack](#2-stack)
 3. [Arquitectura](#3-arquitectura)
-4. [Estado del grafo](#4-estado-del-grafo)
-5. [Nodos](#5-nodos)
-6. [Estructura del repositorio](#6-estructura-del-repositorio)
-7. [Configuración](#7-configuración)
-8. [Instalación (Windows + RTX 5070)](#8-instalación-windows--rtx-5070)
-9. [Uso](#9-uso)
-10. [Calidad y políticas de YouTube](#10-calidad-y-políticas-de-youtube)
-11. [Roadmap](#11-roadmap)
+4. [Nodos](#4-nodos)
+5. [Lo que deja cada run](#5-lo-que-deja-cada-run)
+6. [Estado del grafo](#6-estado-del-grafo)
+7. [Estructura del repositorio](#7-estructura-del-repositorio)
+8. [Configuración](#8-configuración)
+9. [Instalación (Windows + RTX 5070)](#9-instalación-windows--rtx-5070)
+10. [Uso](#10-uso)
+11. [Calidad y políticas de YouTube](#11-calidad-y-políticas-de-youtube)
+12. [Pendiente](#12-pendiente)
 
 ---
 
 ## 1. Formato del vídeo
 
-- **Temática:** noticias de tecnología e IA *explicadas*, con contexto y opinión propia (no leer titulares).
-- **Estilo:** voz en off + imágenes/clips que cambian según lo que se narra + subtítulos palabra a palabra + música de fondo suave.
+- **Temática:** ciencia y tecnología (espacio, física, salud, biología, energía, clima, informática, IA, materiales, ingeniería, inventos). Se definen en `config.yaml` (`channel:`) y entran en todos los prompts.
+- **Dos tipos de vídeo:**
+  - **news:** algo que acaba de pasar. La investigación usa búsquedas de noticias.
+  - **explainer:** algo que no caduca (cómo funciona algo, por qué pasa). La investigación usa la web general y 1-2 artículos de Wikipedia.
+  - Se elige con `--type`; si no, lo decide el modelo a partir del tema.
 - **Formatos:**
-  - **Short** — 9:16, 1080×1920, 45–60 s, 6–10 escenas.
-  - **Largo** — 16:9, 1920×1080, 8–12 min, 40–80 escenas (mejor RPM).
-- **Ritmo:** 3–5 vídeos/semana, todos revisados.
+
+  | | Resolución | Duración | Escenas | Secciones |
+  |---|---|---|---|---|
+  | **Short** | 9:16, 1080×1920 | ~75 s (65–85), ~188 palabras | 10–16 | 3–4 |
+  | **Largo** | 16:9, 1920×1080 | ~5 min (270–330 s) | 24–38 | 4–6 |
+
+- **Guion:** español de España, al espectador se le habla de **tú** (solo cuando el tema le toca). Gancho con la sorpresa primero, tensión hasta el final y un cierre que vuelve al gancho. La última frase **nunca** es una pregunta.
+- **Estilo:** voz en off, imágenes y clips que cambian justo en la palabra que los nombra, movimiento de cámara (con 2.5D) en las fotos y subtítulos quemados. Opcionalmente, música propia.
+  - Short: subtítulos de 3 palabras con la palabra que se dice resaltada.
+  - Largo: frases clásicas en 1–2 líneas.
 
 ---
 
@@ -39,392 +58,525 @@ Todo corre **en local** sobre una **RTX 5070 (12 GB)**, incluido el LLM (LM Stud
 
 | Capa | Herramienta | Notas |
 |---|---|---|
-| Orquestación | **LangGraph** + `SqliteSaver` | Persistencia, reanudación e *interrupt* para revisión humana |
-| LLM (local) | **LM Studio** con **Qwen3.5 9B (GGUF Q6_K, ~7 GB)** | Servidor compatible con OpenAI en `localhost:1234/v1`. Muy bueno en español y con salida estructurada |
-| LLM (alternativa local) | **Gemma 4 12B (QAT Q4_0, ~6,5 GB)** | Buena redacción; si la versión descargada tiene visión, sirve para el nodo `visuals` |
-| LLM (opcional, nube) | **OpenRouter** | Solo para nodos donde el modelo local se quede corto (p. ej. `write_script`). El modelo se configura por nodo |
-| Base de datos | **SQLite** | Noticias, estado, histórico de vídeos |
-| Ingesta | `feedparser`, `trafilatura`, `httpx` | RSS de medios tech + extracción del artículo completo |
-| Búsqueda extra | Tavily o DuckDuckGo | Contexto adicional para el investigador |
-| Voz | **Tu voz grabada** (preferente) o **Chatterbox Multilingual** clonando tu voz | Chatterbox: licencia MIT, español, clonación con ~10 s de referencia |
-| Imágenes generadas | **Flux.1-dev GGUF (Q5/Q8)** en **ComfyUI** | Fallback cuando no hay stock adecuado |
-| Clips generados (opcional) | **Wan 2.2** en ComfyUI | Solo planos clave; lento en 12 GB |
-| Stock | **Pexels API** + **Pixabay API** | Gratis, metraje real con licencia de uso |
-| Material propio | `playwright` (capturas), `matplotlib`/`plotly` (gráficos) | Capturas de webs/repos/papers y gráficos con datos de la noticia |
-| Subtítulos | **faster-whisper** (GPU) | Timestamps por palabra → `.ass` estilo karaoke |
-| Montaje | **moviepy 2.x** + **ffmpeg** (`h264_nvenc`) | Codificación por GPU |
-| Música | YouTube Audio Library / Pixabay Music | *Ducking* con `sidechaincompress` de ffmpeg |
-| Miniaturas | Flux + `Pillow` (texto) | Solo vídeos largos |
-| Subida | **YouTube Data API v3** (`google-api-python-client`, OAuth) | Marca de contenido sintético cuando aplique |
-| Observabilidad | **LangFuse** | Trazas, costes y prompts por nodo |
+| Orquestación | **LangGraph** + `SqliteSaver` | Cada run es un *thread*: se para (*interrupt*) y se reanuda con `--resume` |
+| Envoltorio LLM | `src/llmkit` + `services/llm_hub.py` (`LLMHub`) | Modelo por nodo, salida estructurada, pausas, checkpoints |
+| Texto | **Claude Sonnet 5.5** vía **OpenRouter** | Todos los nodos de texto. Respaldo automático si falla: Nemotron 3 Super (gratis) |
+| Extraer hechos | **Claude Haiku 5.5** vía OpenRouter (`llm.facts`) | Cada texto leído en `research` y `deep_research`; ~20 veces más barato que Sonnet. Respaldo: Sonnet |
+| Juez de imágenes (visión) | **Gemma 4 31B** vía OpenRouter | Respaldo: la versión `:free` |
+| LLM local (opcional) | **LM Studio** (`localhost:1234/v1`) | Hoy no se usa en ningún nodo. `unload_llm` libera su VRAM antes de la fase de medios |
+| Temas | `feedparser` + 17 feeds de ciencia y tecnología | `data/temas/registro.json`: ningún tema se repite |
+| Investigación | `trafilatura`, Tavily o DuckDuckGo (`ddgs`), API de Wikipedia | Tiendas, anuncios, redes y foros nunca son fuente (`research.skip_domains`) |
+| Voz | **Qwen3-TTS 1.7B** (clonación, local, Apache 2.0) | La voz de referencia sale de `scripts/design_voice.py` o de una grabación tuya. `edge-tts` solo para pruebas |
+| Tiempos de cada palabra | **Whisper large-v3-turbo** (transformers, GPU) | Se alinea con las palabras del guion: `words[i]` es siempre la palabra i del guion |
+| Fuentes de imagen | **Pexels**, **Pixabay** (vídeo y foto), **NASA** (dominio público), **Wikimedia Commons** (licencias libres, con créditos) | Sin clave en el `.env`, ese banco se salta |
+| Filtro de imágenes | **SigLIP 2** (local) | Primer filtro texto-imagen; los 8 mejores pasan al juez |
+| Imágenes generadas | **Z-Image Turbo** en **ComfyUI** (local) | Alternativa de pago: Nano Banana 2 en OpenRouter (`visuals.generator: openrouter`) |
+| 2.5D | **Depth Anything V2 Small** (local) | El primer plano se mueve un poco más que el fondo |
+| Montaje | **ffmpeg 7.1** de `imageio-ffmpeg` (dentro del venv) | `h264_nvenc`, `loudnorm`, `xfade`, subtítulos ASS |
+| Subida | **YouTube Data API v3** (`google-api-python-client`, OAuth) | Vídeo, miniatura, subtítulos `.srt`, aviso de contenido sintético |
 
-**Requisito de GPU:** las RTX 50 (Blackwell) necesitan **PyTorch con CUDA 12.8+** (`cu128`). ComfyUI portable ya lo incluye; en el resto de entornos instalar torch desde el índice `cu128`.
+### Dos entornos de Python
 
-### Gestión de la VRAM (12 GB)
-
-El LLM (~7 GB) no cabe a la vez que Flux, Chatterbox o Wan. Como el grafo es secuencial, se reparte por fases:
-
-| Fase | Nodos | Qué ocupa la GPU |
-|---|---|---|
-| 1. Texto | `research`, `write_script`, `review`, `metadata` | LLM en LM Studio |
-| 2. Medios | `voice`, `visuals`, `subtitles`, `assemble` | Chatterbox, Flux (ComfyUI), faster-whisper, NVENC |
-
-- Al terminar la fase de texto se descarga el LLM con `lms unload --all` (el nodo `human_script_edit` es un buen punto, porque el grafo se para ahí de todas formas).
-- `metadata` se ejecuta en la fase de texto, justo después de aprobar el guion, para no volver a cargar el LLM al final.
-- Si se usa el LLM con visión en `visuals`, se carga solo para esa escena y se descarga antes de lanzar Flux. Alternativa: activar en LM Studio la descarga automática por inactividad (TTL).
-- ComfyUI libera memoria entre trabajos con `POST /free`.
+- **`.venv`** (Python 3.13): el proyecto. No lleva torch.
+- **`.venv-tts`** (Python 3.12): torch `cu128` + `qwen-tts` + `transformers`. Ahí corren los *workers* de GPU de `src/tts_worker/` (voz, Whisper, SigLIP 2, profundidad). El proyecto los lanza como subproceso.
+  - Cada worker carga su modelo, hace todo el trabajo y termina, así que la VRAM se libera sola.
+  - Las RTX 50 (Blackwell) necesitan PyTorch con **CUDA 12.8+**.
+- **ComfyUI** va aparte, con su propio venv. El proyecto habla con él por HTTP (`services/comfy.py`) y libera su VRAM con `POST /free`.
 
 ---
 
 ## 3. Arquitectura
 
+> El grafo detallado (qué tipo de pieza es cada nodo, cuántas llamadas hace, qué recibe y qué deja) está en **[ARQUITECTURA.md](ARQUITECTURA.md)**.
+
 ```
-                ┌──────────────────────────────────────┐
-  cron / tarea  │  ingest.py  (fuera del grafo)        │
-  programada ──►│  RSS → trafilatura → SQLite (news)   │
-                └──────────────────┬───────────────────┘
-                                   │
-┌──────────────────────────────────▼──────────────────────────────────────┐
-│                           GRAFO LANGGRAPH                               │
-│                                                                         │
-│  select_news ──► research 🤖 ──► write_script 🤖 ──► review 🤖           │
-│                                        ▲                │               │
-│                                        └── feedback ────┤ (máx. 2)      │
-│                                                         ▼ OK            │
-│                                              ⏸ human_script_edit        │
-│                                                         │               │
-│                                    metadata 🤖 ──► unload_llm           │
-│  ── fin fase de texto (LLM) ─────────────────────────── │ ───────────── │
-│                    ┌────────────────────────────────────┤               │
-│                    ▼                                    ▼               │
-│               voice (por escena)               visuals 🤖 (por escena)  │
-│                    │                                    │               │
-│                    └──────────────┬─────────────────────┘               │
-│                                   ▼                                     │
-│                      subtitles ──► assemble ──► thumbnail               │
-│                                                              │          │
-│                                                  ⏸ human_final_review   │
-│                                                              │          │
-│                                                           upload        │
-└─────────────────────────────────────────────────────────────────────────┘
+ run_pipeline.py
+      │
+      ├─ ─►sin --topic  find_topics 🤖 ─► ⏸ choose_topic ─┐
+      │                                                    │
+      └─ --topic "..." ───────────────────────────────────►┴─► research 🤖 (news | explainer)
+                                                                   │
+              ┌──────── [n] + motivo ───────┐                      ▼
+              ▼                             │
+          angles 🤖 ─────────────────► ⏸ choose_angle   (3 enfoques; [e] otro o el tuyo)
+                                            │
+              ┌──────── [n] + motivo ───────┤
+              ▼                             ▼
+          outline 🤖 ───────────────► ⏸ approve_outline
+                                            │
+                       secciones con preguntas (research.deep)
+                                            ▼
+                                  deep_research 🤖 ─► ⏸ review_research  ([n] tus enlaces por sección)
+                                            │
+          ┌─────────────────────────────────┤  (--manual: directo a manual_script)
+          ▼                                 │
+     write_script 🤖 ◄── algo grave (máx. review.max_revisions) ──┐
+          │                                                       │
+          ▼                                                       │
+     review_script 🤖 ────────────────────────────────────────────┘
+          │
+          ▼
+     ⏸ choose_script ── [n] + motivo ─► write_script
+          │           └ [n] + Enter ──► ⏸ manual_script (tu guion y tus imágenes en <run>/manual/)
+          ▼ [y]                                │
+     unload_llm ◄──────────────────────────────┘
+  ── fin de la fase de texto ──────────────────────────────────────────────
+          │
+          ▼
+     voice (Qwen3-TTS) ─► align (Whisper) ─► brief 🤖 ─► beats 🤖 ─► visuals 🤖
+                                                                       │
+                                                                       ▼
+                                                    ⏸ review_visuals (<run>/montaje/)
+                                                                       │
+                                                                       ▼
+                                                                  assemble ─► <run>/<fecha>_<tema>.mp4
 
-🤖 = nodo con LLM      ⏸ = interrupt (revisión humana)
+  Fuera del grafo:  prepare_upload.py ─► data/listo_para_subir/<vídeo>/ ─► upload_youtube.py ─► YouTube
+
+🤖 = nodo con LLM      ⏸ = pausa (decides tú; --yes lo aprueba todo, solo para pruebas)
 ```
-
-`voice` y `visuals` son independientes entre sí. Se pueden ejecutar **en paralelo** (fan-out/fan-in de LangGraph) solo si la VRAM lo permite; con 12 GB, lo seguro es ejecutarlos en secuencia (ver *Gestión de la VRAM*).
-
-El LLM local (LM Studio) se usa en la fase de texto y se descarga antes de la fase de medios. Por eso `metadata` se genera justo después de aprobar el guion.
 
 ### Principio de sincronización
 
-El guion se divide en **escenas**. Cada escena tiene su narración y su visual. El audio de cada escena se genera (o graba) por separado y **la duración del visual = duración de su audio**. Así la imagen cambia exactamente cuando cambia la idea. Dentro de una escena, los timestamps por palabra de faster-whisper permiten cortes más finos y subtítulos animados.
+- El **guion** solo tiene palabras, divididas en escenas.
+- Cada escena tiene su audio. Whisper da el tiempo de **cada palabra**.
+- Después, `beats` decide **qué se ve y desde qué palabra**. Una escena puede tener varios planos.
+- Cada plano empieza exactamente cuando se dice lo que muestra.
+- Las escenas duran su audio más `video.scene_gap`, redondeado a fotogramas enteros. La posición se acumula, así que no hay deriva entre imagen y voz.
+
+### Fases y VRAM (12 GB)
+
+- **Fase de texto:** todo en la nube. Nada ocupa la GPU, salvo un modelo de LM Studio si se configura uno local.
+- **Fase de medios:** un modelo de GPU cada vez: Qwen3-TTS → Whisper → SigLIP 2 → Z-Image (ComfyUI) → Depth Anything → NVENC. Cada uno libera la VRAM al terminar.
 
 ---
 
-## 4. Estado del grafo
+## 4. Nodos
 
-```python
-from typing import TypedDict, Literal
-from pydantic import BaseModel, Field
-
-class Scene(BaseModel):
-    id: int
-    narration: str = Field(description="1-2 frases que se narran")
-    visual_type: Literal["stock", "generated", "screenshot", "chart"]
-    visual_query: str = Field(description="Búsqueda de stock en inglés")
-    visual_prompt: str = Field(description="Prompt para Flux si no hay stock")
-    on_screen_text: str | None = Field(default=None, description="Texto/cifra destacada")
-    # se rellenan después
-    audio_path: str | None = None
-    audio_duration: float | None = None
-    visual_path: str | None = None
-
-class Script(BaseModel):
-    title: str
-    hook: str                 # primera escena, 2-3 s, debe enganchar
-    scenes: list[Scene]
-    sources: list[str]
-
-class VideoState(TypedDict, total=False):
-    run_id: str
-    format: Literal["short", "long"]
-    news: dict                # noticia seleccionada
-    facts: list[dict]         # {fact, source_url}
-    script: Script
-    review_ok: bool
-    review_feedback: str
-    revisions: int
-    subtitles_path: str
-    video_path: str
-    metadata: dict            # title, description, tags, synthetic_media
-    thumbnail_path: str
-    approved: bool
-    youtube_id: str
-```
-
----
-
-## 5. Nodos
-
-### Ingesta (fuera del grafo) — `ingest/`
-- Lee feeds RSS configurados (medios de tecnología/IA, blogs oficiales, arXiv).
-- Extrae el texto completo con `trafilatura`.
-- Deduplica por URL y por similitud de título.
-- Guarda en `news` con `status = 'new'`, categoría y fecha.
-- Se ejecuta cada pocas horas (cron en el servidor o Programador de tareas de Windows).
-
-### `select_news`
-- Elige al azar una noticia `new` de los últimos N días, con pesos por categoría para que haya variedad.
-- Excluye temas ya cubiertos (similitud con títulos de vídeos anteriores).
-- Marca la noticia como `in_progress`.
+### Temas — `find_topics` 🤖 + `choose_topic` ⏸
+Solo cuando el run empieza sin `--topic`.
+- Lee los feeds de `topics.feeds`: entradas de los últimos `topics.days` días, sin las que ya están en el registro.
+- El modelo agrupa las entradas que cuentan lo mismo y las puntúa para el canal:
+  - ¿hay un dato que sorprende?
+  - ¿se puede explicar?
+  - ¿dura en el tiempo?
+  - ¿hay algo que enseñar?
+- Se suman los temas propuestos en los últimos `reserve_days` y no elegidos. Todo va a `data/temas/<fecha>.md`.
+- Opciones en la pausa:
+  - `[y]` el primero; `[e]` otro número.
+  - `[n] x 3 5` descarta esos temas para siempre; `[n]` + Enter muestra otros.
+- El tema elegido trae sus artículos (`--url`), su *datazo* (`--notes`), su tipo y su formato, y queda `en_curso` en `registro.json`.
 
 ### `research` 🤖
-- Parte del artículo completo y añade 2–3 búsquedas para contexto (qué es, por qué importa, precedentes).
-- Devuelve una lista de **hechos con su fuente**. Nada sin fuente.
+- Decide **news** o **explainer**, escribe las búsquedas y, si es explainer, elige los artículos de Wikipedia.
+- Lee en este orden: tus `--url`, Wikipedia y los resultados de búsqueda.
+  - Salta los muros de pago, las webs bloqueadas y `skip_domains`.
+  - Salta también los textos en los que el modelo no encuentra nada.
+- Extrae **hechos de cada texto por separado**, así cada hecho conserva su fuente exacta.
+- Esos hechos son lo **único** que pueden usar el esquema y el guion.
+- Los textos leídos quedan en `<run>/research/`.
+
+### `angles` 🤖 + `choose_angle` ⏸
+- Propone 3 enfoques distintos (pregunta central, gancho y por qué engancha) y recomienda uno.
+- Busca el conflicto o la sorpresa, no el "resumen de la noticia".
+- Opciones en la pausa:
+  - `[y]` el recomendado.
+  - `[e]` otro número o tu propio enfoque escrito.
+  - `[n]` + motivo: tres nuevos.
+- `angles.json` se puede editar antes de aprobar.
+
+### `outline` 🤖 + `approve_outline` ⏸
+- Escribe el título, la pregunta que guía el vídeo y las secciones.
+- Cada sección lleva:
+  - su papel: `hook`, `context`, `tension`, `development`, `reveal` o `conclusion`;
+  - la emoción que busca;
+  - sus hechos;
+  - las **preguntas** que hay que averiguar para contarla.
+- Las palabras de cada sección las fija el código (`lengths.py`), no el modelo.
+- `outline.json` se puede editar. `[n]` + motivo lo rehace.
+
+### `deep_research` 🤖 + `review_research` ⏸
+Busca el contexto de cada sección que tenga preguntas. Corre en shorts y en largos (`research.deep`).
+- Por cada sección:
+  - búsquedas web y artículos de Wikipedia;
+  - hasta `deep_sources_per_section` textos;
+  - hechos nuevos asignados a esa sección.
+- En la pausa ves cuántos hechos tiene cada sección y cuánto durará el vídeo.
+  - Una sección no puede ser más larga de lo que dan sus hechos (`words_per_fact`). **Nunca se rellena.**
+  - Una sección sin hechos se quita.
+- `[n]` + `4 https://... 6 https://...` añade tus enlaces a esas secciones.
 
 ### `write_script` 🤖
-- Salida estructurada → `Script`.
-- Reglas del prompt: gancho en los primeros 2–3 s, una idea por escena, explicar *por qué importa*, incluir una opinión o conclusión, lenguaje hablado (no escrito), duración objetivo según `format`.
-- Si viene `review_feedback`, reescribe aplicándolo.
+- **Short:** el guion entero en una llamada, porque es un solo arco.
+- **Largo:** una sección por llamada. Cada llamada ve:
+  - el esquema entero;
+  - sus hechos;
+  - cómo acabó la sección anterior;
+  - qué hechos ya se contaron.
+  - La última sección, además, ve cómo empezó el vídeo.
+- Antes de las escenas, el modelo escribe un **plan**: la pregunta que abre, dónde se complica, dónde va el dato potente y cómo cierra. Va a `<run>/plan_guion.md` y no se narra.
+- Si no cumple la longitud o repite expresiones entre escenas, se le pide **una** vez más diciendo qué arreglar.
+- Las fuentes del guion salen de la investigación, nunca del modelo.
 
-### `review` 🤖
-- Comprueba cada afirmación del guion contra `facts` (detecta inventos).
-- Evalúa el gancho, el ritmo y la claridad.
-- Devuelve `review_ok` + `review_feedback`. Vuelve a `write_script` como máximo 2 veces.
+### `review_script` 🤖
+Un editor lee el guion entero con el esquema y los hechos delante (`prompts/review_script.md`) y devuelve:
+- **issues**: qué arreglar y cómo, escena por escena.
+  - Los **graves** vuelven a `write_script` como mucho `review.max_revisions` veces seguidas:
+    - un dato que no sale de los hechos;
+    - un tema sin responder;
+    - algo clave que no se entiende;
+    - un gancho que destripa el final;
+    - el vídeo entero sin tensión;
+    - una pregunta como cierre.
+  - En un largo solo se reescriben las secciones con nota.
+- **dubious**: hechos que parecen un error del artículo. No se corrigen solos: decides tú.
 
-### `human_script_edit` ⏸
-- *Interrupt*: el guion se exporta a un `.md`/`.json` editable.
-- Aquí se añade la opinión propia, se corrigen frases o se reordenan escenas.
-- Al reanudar se vuelve a validar el esquema `Script`.
+Comprueba también que se aplicó lo que se pidió en la reescritura anterior. Todo lo que queda va a `script.md` (sección "Revisión").
+
+### `choose_script` ⏸ + `manual_script` ⏸
+- `[y]`: se usa ese guion.
+- `[n]` + motivo: se reescribe y se revisa otra vez.
+- `[n]` + Enter: **guion propio** en `<run>/manual/guion.md` (ver `src/graph/manual.py`):
+  - un párrafo por escena;
+  - `## ` empieza una sección;
+  - `[archivo.jpg]` delante de una palabra hace que ese archivo de `manual/visuales/` se vea desde ahí;
+  - las escenas sin marcas se ilustran solas.
+- Con `--manual` se llega aquí directamente desde el esquema.
+- Lo que dejes antes en `data/manual/` se copia al run.
+
+### `unload_llm`
+Fin de la fase de texto: `lms unload --all` si `llm.unload_after_text_phase`.
 
 ### `voice`
-- **Modo `record`** (preferente): genera un guion de lectura por escenas; se graba cada escena (o una toma completa que se corta por silencios / alineación con whisper).
-- **Modo `clone`**: Chatterbox Multilingual con un audio de referencia de tu voz → un `.wav` por escena.
-- Normaliza volumen (`ffmpeg loudnorm`, −14 LUFS) y guarda `audio_duration` por escena.
+- `voice.mode: clone`: Qwen3-TTS con la voz de `assets/voice_reference.wav` y su transcripción exacta en `voice_reference.txt`.
+  - Todas las escenas en un solo trabajo.
+  - Semilla fija: el mismo texto da el mismo audio.
+- Se corta el silencio del final de cada escena y se normaliza el volumen.
+- `edge` (voces de Microsoft) solo sirve para pruebas: no cumple la política de YouTube.
+- `record` (grabarlo tú) está pendiente.
+
+### `align`
+- Whisper transcribe cada escena con tiempos por palabra.
+- Sus palabras se emparejan con las del guion (`difflib`). Si Whisper escribe una palabra de otra forma ("1.144" por "mil ciento cuarenta y cuatro"), su tiempo se interpola entre sus vecinas.
+
+### `brief` 🤖
+Una llamada por vídeo con el guion final. Define el universo visual:
+- los objetos, lugares y acciones filmables del tema;
+- lo que **nunca** debe verse (`avoid`);
+- cómo se enseña cada metáfora del guion (sin tomarla al pie de la letra);
+- el estilo común de las imágenes generadas.
+
+Se guarda en `brief.json`. Si lo editas, `--redo brief` lo vuelve a leer.
+
+### `beats` 🤖
+Planifica **por idea**: 1–2 ideas por escena. Cada idea lleva:
+- su tipo: `entity`, `generic`, `data`, `source` o `abstract`;
+- lo que no debe verse;
+- sus **planos distintos**, cada uno con lo que tiene que verse, 1–3 búsquedas en inglés (de la más concreta a la más genérica) y un prompt por si hay que generarlo.
+
+Después, el código coloca cada idea en su palabra:
+- une los planos más cortos que `min_beat_seconds`;
+- parte los más largos que `beat_seconds` (short 2–4 s, largo 5–10 s), y cada parte enseña otro plano de la idea.
+
+Se guarda en `beats.json`, `manual/prompts_imagenes.md` y `plan_visual.json` (los prompts, para generar imágenes a mano con otra IA).
 
 ### `visuals` 🤖
-Para cada escena, según `visual_type`:
-1. **stock** → busca en Pexels/Pixabay (vídeo primero, en la orientación del formato). Un LLM con visión puntúa las miniaturas de los 5–8 primeros resultados contra la narración y elige la mejor. Si ninguna supera el umbral → fallback a `generated`.
-2. **generated** → Flux vía API de ComfyUI con `visual_prompt` (estilo visual común del canal en el prompt).
-3. **screenshot** → `playwright` captura la web/repositorio/paper de la fuente.
-4. **chart** → gráfico generado con los datos de la noticia (estilo del canal).
+Por cada plano:
+1. **Candidatos** de las fuentes de su tipo (`visuals.sources`):
 
-Evita repetir el mismo clip dentro del vídeo y entre vídeos recientes.
+   | Tipo | Fuentes |
+   |---|---|
+   | `entity` | stock, Wikimedia, NASA |
+   | `generic` | stock, NASA |
+   | `abstract` | stock, NASA |
+   | `data`, `source` | stock |
 
-### `subtitles`
-- `faster-whisper` sobre el audio completo → timestamps por palabra.
-- Genera un `.ass` con estilo del canal (2–4 palabras por línea, palabra activa resaltada).
+   Todas se reparten `max_candidates` y las búsquedas se guardan en caché.
+2. **SigLIP 2** se queda con los `top_k` más parecidos al texto.
+3. El **juez con visión** los ve en una sola cuadrícula, recortados como saldrán en pantalla y con las palabras que se dicen, y elige uno. Por debajo de `min_score` no se usa ninguno.
+4. Lo que no pasa el juez se **genera** con Z-Image en ComfyUI (o con Nano Banana si `generator: openrouter`). Con el mismo prompt se reutiliza la imagen, no se regenera.
+
+Más reglas:
+- En vídeos largos, una foto no dura más de `photo_max_seconds` (5 s).
+  - Primero se busca un **vídeo** para ese plano.
+  - Si no hay, el plano se reparte entre varias imágenes (`05.jpg` + `05b.jpg`).
+- Cada clip o foto se usa una sola vez por vídeo.
+- Al final se copia todo en orden a `<run>/montaje/`.
+
+### `review_visuals` ⏸
+`<run>/montaje/` tiene un archivo por plano (`01.mp4`, `02.jpg`...) y `lista.md` (tiempo, texto y origen de cada uno). Ahí puedes:
+- **sustituir** un plano: borra `05.mp4` y deja el tuyo como `05.jpg`;
+- **quitarlo**: el plano anterior sigue durante ese tiempo;
+- **añadir** uno: `05b.mp4` comparte el tiempo del plano 5;
+- poner **música**: `musica.mp3`.
+
+`[y]` monta exactamente lo que hay, sin juez. `[n]` para sin montar; luego `--redo assemble` vuelve a leer la carpeta.
 
 ### `assemble`
-- Por escena: visual ajustado al encuadre (crop/scale), duración = audio + 0,15 s; imágenes con zoom lento (Ken Burns).
-- Transiciones cortas entre escenas, `on_screen_text` superpuesto cuando exista.
-- Música de fondo con *ducking* bajo la voz.
-- Subtítulos quemados con ffmpeg.
-- Exporta con `h264_nvenc`, 30 fps, AAC, −14 LUFS.
+- **Clips de vídeo:** se quitan las bandas negras y se recortan para llenar el cuadro. Si un clip es corto, se ralentiza un poco y se congela el último fotograma.
+- **Fotos:** movimiento lento y distinto en cada una (zoom, paneo, inclinación), con **2.5D** (Depth Anything) si `video.parallax`.
+- **Transiciones:** fundido cruzado solo entre escenas. Dentro de una escena, corte seco en la palabra clave.
+- **Audio:**
+  - la voz se normaliza a −14 LUFS;
+  - la música va a un nivel fijo por debajo de la voz (`video.music.db`), con un hueco en 1–4 kHz y fundidos.
+- **Final:** subtítulos ASS quemados (`video.subtitles`) y `h264_nvenc` → `<run>/<yyyymmdd>_<tema>.mp4`.
+- Los segmentos quedan en `<run>/segments/`.
 
-### `metadata` 🤖
-- Título (≤ 70 caracteres), descripción con resumen + **fuentes enlazadas**, tags, capítulos (en vídeos largos).
-- Decide `synthetic_media = True` si hay imágenes/vídeos generados realistas o voz clonada.
+### Publicación (fuera del grafo)
+- **`scripts/prepare_upload.py --run <id>`** crea `data/listo_para_subir/<fecha_tema>/` con:
+  - `video.mp4`;
+  - `metadata.json` (título, tags, privacidad, contenido sintético...);
+  - `descripcion.md` (resumen, capítulos, fuentes, **créditos** de las imágenes, hashtags);
+  - `miniatura.jpg` (un plano del vídeo con 2–4 palabras grandes; `--thumb N` elige el plano);
+  - `subtitulos.srt`.
 
-### `thumbnail` (solo vídeos largos)
-- Imagen Flux + texto grande con `Pillow` siguiendo la plantilla del canal.
-
-### `human_final_review` ⏸
-- *Interrupt*: se revisa el vídeo final, el título y la miniatura.
-- Opciones: aprobar, rehacer un nodo concreto (p. ej. `visuals` de la escena 4) o descartar.
-
-### `upload`
-- YouTube Data API v3 (`videos.insert`, subida reanudable) + `thumbnails.set`.
-- Sube como **privado o programado**; marca contenido sintético si aplica.
-- Actualiza la noticia a `used` y registra el vídeo en `videos`.
+  Solo el título, el resumen, las etiquetas y el texto de la miniatura salen del modelo (`prompts/publish.md`). Edita lo que quieras antes de subir.
+- **`scripts/upload_youtube.py <carpeta>`** sube el vídeo, la miniatura y los subtítulos, y marca el contenido sintético. Después mueve la carpeta a `data/subidos/` con `youtube.json` y marca el tema como `subido` en el registro.
 
 ---
 
-## 6. Estructura del repositorio
+## 5. Lo que deja cada run
+
+`data/runs/<run_id>/` (`run_id` = `yyyymmdd-hhmmss`):
+
+| Archivo | Qué es |
+|---|---|
+| `research/` | Cada texto leído (`s<sección>_<n>.txt` los de `deep_research`), para comprobar de dónde sale un hecho |
+| `angles.md` / `angles.json` | Los 3 enfoques (el `.json` se edita) |
+| `outline.md` / `outline.json` | El esquema (el `.json` se edita) |
+| `plan_guion.md` | El plan de tensión del guionista |
+| `script.md` / `script.json` | El guion con su revisión. Si cambias `script.json` y haces `--redo voice`, se vuelve a narrar |
+| `manual/` | `guion.md` y `visuales/` (modo manual); `prompts_imagenes.md` y `plan_visual.json` (siempre) |
+| `audio/` | Un WAV por escena |
+| `brief.json` / `beats.json` | El plan visual (se editan; `--redo brief` o `--redo beats`) |
+| `visuals/` | Lo descargado y generado; `thumbs/` (candidatos), `choices.json` (qué se eligió y por qué), `searches.json` (caché) |
+| `montaje/` | Lo que entra en el vídeo, en orden, más `lista.md`, `.auto.json` y `musica.mp3` (opcional) |
+| `creditos.txt` | Atribuciones de Wikimedia |
+| `segments/` | Los trozos de vídeo de cada plano |
+| `<yyyymmdd>_<tema>.mp4` | El vídeo final |
+
+Fuera de los runs:
+- `data/checkpoints.sqlite`: el estado de LangGraph.
+- `data/temas/`: las búsquedas de temas y `registro.json`.
+- `data/listo_para_subir/` y `data/subidos/`.
+
+---
+
+## 6. Estado del grafo
+
+`src/graph/state.py`. El estado guarda **datos planos** (dicts y listas), que se leen con `Script.model_validate(state["script"])`. Hay dos tipos de esquema:
+
+- **`*Draft`:** lo que rellena el LLM. Solo lleva campos editoriales: los ids, las secciones, las fuentes y las longitudes las pone el código, así el modelo no puede inventarlas.
+- **`Outline`, `Script`, `Scene`:** lo que se guarda y edita una persona.
+
+Claves principales:
+
+| Clave | Contenido |
+|---|---|
+| `topic`, `notes`, `urls`, `format`, `video_type`, `manual` | Lo que se pide al empezar (o lo que trae el tema elegido) |
+| `topic_candidates`, `topic_id` | Temas propuestos y el elegido (registro) |
+| `sources`, `facts` | Artículos leídos y hechos (`{fact, source_url, section}`) |
+| `angles`, `angle`, `outline` | Enfoques, el elegido y el esquema |
+| `script`, `script_plan`, `script_review`, `script_notes`, `revisions` | Guion, plan, revisión y reescrituras |
+| `audio` | `scene_id → {path, duration, words[{word, start, end}]}` |
+| `brief`, `beats` | Plan visual: universo del vídeo y qué se ve desde qué palabra |
+| `visuals`, `visual_extras`, `montage` | `beat_id →` visual elegido (+ los extra de planos largos) y lo que usa `assemble` |
+| `video_path` | El `.mp4` final |
+
+---
+
+## 7. Estructura del repositorio
 
 ```
-ai-news-video/
-├── README.md
-├── pyproject.toml
-├── config.yaml
-├── .env.example                 # OPENROUTER_API_KEY, PEXELS_API_KEY, ...
-├── data/
-│   ├── app.db                   # SQLite: news, videos
-│   ├── checkpoints.db           # SqliteSaver de LangGraph
-│   └── runs/<run_id>/           # audio/, visuals/, subs/, final.mp4
+llm_video_generator/
+├── README_proyecto_ai_2.md
+├── pyproject.toml / uv.lock
+├── config.yaml                  # todo lo que no es una clave
+├── .env.example                 # OPENROUTER_API_KEY, PEXELS_API_KEY, PIXABAY_API_KEY, TAVILY_API_KEY...
 ├── assets/
-│   ├── voice_reference.wav      # tu voz para clonación
-│   ├── music/
-│   ├── fonts/
-│   └── comfy_workflows/         # flux_image.json, wan_clip.json
-├── src/
-│   ├── ingest/
-│   │   ├── feeds.py
-│   │   └── run_ingest.py
-│   ├── graph/
-│   │   ├── state.py             # VideoState, Scene, Script
-│   │   ├── build.py             # construcción del grafo
-│   │   └── nodes/
-│   │       ├── select_news.py
-│   │       ├── research.py
-│   │       ├── write_script.py
-│   │       ├── review.py
-│   │       ├── voice.py
-│   │       ├── visuals.py
-│   │       ├── subtitles.py
-│   │       ├── assemble.py
-│   │       ├── metadata.py
-│   │       ├── thumbnail.py
-│   │       └── upload.py
-│   ├── prompts/                 # un .md por nodo con LLM
-│   ├── services/
-│   │   ├── llm.py               # cliente LM Studio / OpenRouter (modelo por nodo) + unload
-│   │   ├── comfy.py             # cliente HTTP de ComfyUI (/prompt, /history)
-│   │   ├── tts.py               # Chatterbox
-│   │   ├── stock.py             # Pexels / Pixabay
-│   │   ├── capture.py           # playwright
-│   │   ├── media.py             # helpers ffmpeg / moviepy
-│   │   └── youtube.py           # OAuth + subida
-│   └── db.py
+│   ├── voice_reference.wav      # la voz del canal (no está en git)
+│   ├── voice_reference.txt      # lo que se dice en ella, exacto
+│   └── fonts/
+├── data/                        # STATE_DIR: checkpoints, runs/, temas/, listo_para_subir/, subidos/, youtube/
 ├── scripts/
-│   ├── run_pipeline.py          # lanza / reanuda un run
-│   └── auth_youtube.py          # primer login OAuth
-└── tests/
-```
-
-**Entornos separados:** el proyecto principal, Chatterbox y ComfyUI van en entornos distintos para no pisar dependencias de torch. El proyecto habla con ComfyUI por HTTP y con Chatterbox por un pequeño servidor local o `subprocess`.
-
----
-
-## 7. Configuración
-
-`config.yaml` (ejemplo):
-
-```yaml
-format: short                 # short | long
-
-llm:
-  providers:
-    local:
-      base_url: http://localhost:1234/v1     # LM Studio
-      api_key: lm-studio                     # no se usa, pero es obligatorio
-    openrouter:
-      base_url: https://openrouter.ai/api/v1
-      api_key_env: OPENROUTER_API_KEY
-  default:      {provider: local, model: qwen3.5-9b, temperature: 0.3}
-  write_script: {provider: local, model: qwen3.5-9b, temperature: 0.8}
-  review:       {provider: local, model: qwen3.5-9b, temperature: 0.0}
-  visuals:      {provider: local, model: gemma-4-12b}   # requiere versión con visión
-  # Si el guion no convence en local, cambiar solo este nodo:
-  # write_script: {provider: openrouter, model: <modelo-fuerte>}
-  unload_after_text_phase: true             # lms unload --all
-
-voice:
-  mode: clone                 # record | clone
-  reference: assets/voice_reference.wav
-  language: es
-
-visuals:
-  stock_providers: [pexels, pixabay]
-  min_match_score: 0.7
-  style_prompt: "cinematic, soft light, tech aesthetic, no text"
-
-video:
-  short:  {width: 1080, height: 1920, target_seconds: 55}
-  long:   {width: 1920, height: 1080, target_seconds: 600}
-  fps: 30
-  loudness_lufs: -14
-
-review:
-  max_revisions: 2
-
-youtube:
-  privacy: private            # private | unlisted | scheduled
-  category_id: 28             # Science & Technology
-  default_language: es
+│   ├── run_pipeline.py          # lanza / reanuda / rehace un run
+│   ├── find_topics.py           # solo la lista de temas, sin empezar un vídeo
+│   ├── design_voice.py          # diseña la voz del canal (una vez)
+│   ├── prepare_upload.py        # run terminado -> carpeta lista para subir
+│   └── upload_youtube.py        # carpeta -> YouTube
+└── src/
+    ├── graph/
+    │   ├── build.py             # el grafo
+    │   ├── state.py             # VideoState y esquemas
+    │   ├── lengths.py           # palabras, escenas y secciones según el formato
+    │   ├── script_files.py      # script.json / script.md
+    │   ├── manual.py            # guion.md y marcas [archivo]
+    │   ├── montage.py           # <run>/montaje/
+    │   ├── subtitles.py         # subtítulos ASS y líneas del SRT
+    │   └── nodes/               # un módulo por nodo (topics, research, angles, outline, deep_research,
+    │                            #   write_script, review_script, manual_script, unload_llm, voice,
+    │                            #   align, brief, beats, visuals, review_visuals, assemble)
+    ├── prompts/                 # un .md por nodo con LLM; {{canal}} y {{temas}} salen de config.yaml
+    ├── services/
+    │   ├── llm.py, llm_hub.py   # modelo por nodo (OpenRouter / LM Studio), respaldo, descarga de VRAM
+    │   ├── topics.py            # feeds + registro de temas
+    │   ├── articles.py          # descarga y limpia artículos (trafilatura)
+    │   ├── wikipedia.py
+    │   ├── stock.py             # Pexels, Pixabay, NASA, Wikimedia
+    │   ├── contact_sheet.py     # cuadrícula de candidatos para el juez
+    │   ├── comfy.py             # ComfyUI (Z-Image)
+    │   ├── image_api.py         # generación de pago en OpenRouter
+    │   ├── tts.py               # Qwen3-TTS / edge-tts
+    │   ├── workers.py           # lanza los workers de GPU con .venv-tts
+    │   ├── media.py, ass.py     # ffmpeg y subtítulos ASS
+    │   ├── publish.py           # carpeta lista para subir
+    │   └── youtube.py           # OAuth + subida
+    ├── tts_worker/              # corren con .venv-tts: qwen, align (Whisper), embed (SigLIP 2), parallax
+    ├── llmkit/                  # base reutilizable: modelo, agente, RAG, persistencia, aprobaciones...
+    └── modules/pexels_scraper.py   # utilidad suelta (Playwright); el pipeline no la usa
 ```
 
 ---
 
-## 8. Instalación (Windows + RTX 5070)
+## 8. Configuración
 
-1. **Proyecto principal**
-   ```bash
-   python -m venv .venv && .venv\Scripts\activate
-   pip install -e .
-   playwright install chromium
-   ```
-2. **PyTorch para Blackwell** (en cada entorno que use GPU)
-   ```bash
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
-   ```
-3. **LM Studio**
-   - Descargar **Qwen3.5 9B** (GGUF Q6_K) desde *Discover*; opcionalmente **Gemma 4 12B** (QAT Q4_0).
-   - Pestaña *Developer* → **Start Server** (`http://localhost:1234/v1`).
-   - Contexto de 8k–16k tokens es suficiente; más contexto consume más VRAM.
-   - Instalar el CLI `lms` (desde LM Studio) para poder cargar/descargar modelos desde el pipeline.
-   - Comprobar: `curl http://localhost:1234/v1/models`
-4. **ComfyUI portable** (build NVIDIA) + ComfyUI-Manager → instalar `ComfyUI-GGUF` (y `ComfyUI-WanVideoWrapper` si se usa Wan). Descargar Flux.1-dev GGUF, encoders y VAE. Arrancar con `--listen 127.0.0.1`.
-5. **Chatterbox** en un venv aparte (instalar torch `cu128` antes que el resto).
-6. **faster-whisper** con soporte CUDA.
-7. **ffmpeg** en el `PATH`, con NVENC (`ffmpeg -encoders | findstr nvenc`).
-8. **YouTube:** crear proyecto en Google Cloud Console → habilitar YouTube Data API v3 → credenciales OAuth (app de escritorio) → `python scripts/auth_youtube.py`.
-9. Copiar `.env.example` a `.env` y rellenar las claves.
+Todo está en `config.yaml`, comentado. Las claves van en el `.env`. Resumen de las secciones:
+
+| Sección | Qué decide |
+|---|---|
+| `format` | `long` o `short` por defecto (`--format` lo cambia) |
+| `channel` | Quién es el canal y de qué temas habla (rellena `{{canal}}` y `{{temas}}` en los prompts). Otro canal sería otro bloque, no una copia del código |
+| `llm` | Proveedores (`local` = LM Studio, `openrouter`) y **modelo por nodo**: cada nodo hereda de `default` y puede tener `fallback` |
+| `voice` | `mode` (`clone` / `edge`), referencia, modelo Qwen3-TTS, semilla |
+| `workers` | Python de `.venv-tts` |
+| `align` | Modelo de Whisper |
+| `visuals` | Fuentes por tipo de plano, duración de los planos, umbral del juez, generador (`comfy` / `openrouter`), estilo |
+| `comfy` | URL y modelos de Z-Image en ComfyUI |
+| `video` | Resolución, duración, escenas y secciones por formato; subtítulos, transiciones, música, 2.5D, codificador |
+| `research` | Búsquedas, artículos, `skip_domains`, investigación por secciones (`deep`) |
+| `topics` | Feeds, días, candidatos, `reserve_days` |
+| `review` | `max_revisions` del revisor del guion |
+| `youtube` | Carpetas, credenciales, privacidad, categoría (28 = Ciencia y tecnología) |
+
+En el `.env`:
+- `OPENROUTER_API_KEY`: obligatoria y con saldo para Sonnet.
+- `PEXELS_API_KEY` y `PIXABAY_API_KEY`.
+- `SEARCH_PROVIDER` (`tavily` o `duckduckgo`) y `TAVILY_API_KEY`.
+- `STATE_DIR=data`.
 
 ---
 
-## 9. Uso
+## 9. Instalación (Windows + RTX 5070)
+
+1. **Proyecto principal** (Python 3.13):
+   ```bash
+   uv sync --extra youtube            # o: python -m venv .venv && .venv\Scripts\activate && pip install -e .[youtube]
+   ```
+   ffmpeg viene con `imageio-ffmpeg`, así que no hay que instalarlo en el sistema.
+2. **`.venv-tts`** (Python 3.12) para los workers de GPU. Instala torch `cu128` **antes** que nada, para que PyPI no traiga el torch de CPU:
+   ```bash
+   uv venv .venv-tts --python 3.12
+   .venv-tts\Scripts\python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+   .venv-tts\Scripts\python -m pip install qwen-tts transformers
+   ```
+   Los modelos (Qwen3-TTS, Whisper, SigLIP 2, Depth Anything) se descargan de Hugging Face la primera vez.
+3. **Voz del canal:**
+   - Diseñada: `python scripts/design_voice.py`, escucha los candidatos y luego `python scripts/design_voice.py --pick N`.
+   - Tuya: graba ~10–15 s en `assets/voice_reference.wav` y escribe lo que dices, exacto, en `voice_reference.txt`.
+4. **ComfyUI** en su propia carpeta y venv, con los modelos de Z-Image Turbo de `huggingface.co/Comfy-Org/z_image_turbo` (`split_files/`) en `models/diffusion_models`, `models/text_encoders` y `models/vae`. Tiene que estar **arrancado** antes de un run si `visuals.generator: comfy`:
+   ```bash
+   .venv\Scripts\python.exe main.py --listen 127.0.0.1 --port 8188
+   ```
+5. **`.env`:** copia `.env.example` y rellena las claves.
+6. **YouTube**, una vez (detalle en `src/services/youtube.py`):
+   1. Proyecto en Google Cloud con YouTube Data API v3.
+   2. Pantalla de consentimiento *External*, con tu cuenta como usuario de prueba.
+   3. Cliente OAuth "Desktop" con el JSON en `data/youtube/client_secret.json`.
+   4. La primera subida abre el navegador para elegir el canal.
+7. **LM Studio** (opcional, solo para modelos locales): servidor en `localhost:1234/v1` y CLI `lms`. Comprueba los ids con `lms ls`: con un id incorrecto usa sin avisar el modelo que tenga cargado.
+
+> **Smart App Control (Windows 11)** puede bloquear DLL sin firmar ("Una directiva de Control de aplicaciones bloqueó este archivo"), en torch, scikit-learn o uuid_utils. Un "DLL load failed" en este PC no suele ser un fallo del código. Se desactiva en Seguridad de Windows → Control de aplicaciones y navegador, y puede volver a activarse con una actualización.
+
+---
+
+## 10. Uso
 
 ```bash
-# 1. Ingesta de noticias (o programarla)
-python -m src.ingest.run_ingest
+# Empezar un vídeo
+python scripts/run_pipeline.py                                  # elige el tema entre los de los feeds
+python scripts/run_pipeline.py --format short                   # ... y que sea un short
+python scripts/run_pipeline.py --topic "Cómo funciona un reloj nuclear" --type explainer
+python scripts/run_pipeline.py --topic "..." --notes "el datazo: ..." --url https://... --url https://...
+python scripts/run_pipeline.py --topic "..." --manual           # del esquema directo a tu guion
 
-# 2. Lanzar un vídeo
-python scripts/run_pipeline.py --format short
+# Reanudar un run parado (Ctrl+C en una pausa, un error, sin saldo...)
+python scripts/run_pipeline.py --resume 20261013-025807
 
-# 3. Se detiene en human_script_edit → editar data/runs/<run_id>/script.md
-python scripts/run_pipeline.py --resume <run_id>
+# Rehacer un nodo de medios y los siguientes (también en un run terminado)
+python scripts/run_pipeline.py --resume <run_id> --redo voice       # narración cambiada en script.json
+python scripts/run_pipeline.py --resume <run_id> --redo brief       # brief.json editado
+python scripts/run_pipeline.py --resume <run_id> --redo beats       # beats.json editado (o borrado: nuevos)
+python scripts/run_pipeline.py --resume <run_id> --redo visuals     # elegir otra vez (respeta tus archivos de montaje/)
+python scripts/run_pipeline.py --resume <run_id> --redo assemble    # volver a montar con lo que hay en montaje/
 
-# 4. Se detiene en human_final_review → revisar final.mp4
-python scripts/run_pipeline.py --resume <run_id> --approve
-#   o rehacer un nodo:  --redo visuals --scene 4
+# Temas sin empezar un vídeo
+python scripts/find_topics.py                  # --days 3 --top 5 · --no-llm (gratis) · --discard <id>
+
+# Publicar
+python scripts/prepare_upload.py --run <run_id>              # --thumb 3 · --force
+python scripts/upload_youtube.py data/listo_para_subir/<carpeta>   # --privacy unlisted
 ```
 
----
+`--yes` aprueba todas las pausas sin preguntar. Úsalo solo para pruebas.
 
-## 10. Calidad y políticas de YouTube
+**Las pausas, en orden:**
+1. Tema (sin `--topic`).
+2. Enfoque.
+3. Esquema.
+4. Investigación por secciones (si alguna sección tiene preguntas).
+5. Guion.
+6. Montaje.
 
-**Política de "contenido no auténtico"** (YPP, desde julio de 2025): YouTube no monetiza contenido producido en masa o con plantilla. Para estar del lado bueno:
-
-- [ ] Voz propia o clonada de tu voz (no voces genéricas).
-- [ ] Cada vídeo incluye explicación y opinión propias, añadidas en `human_script_edit`.
-- [ ] Mezcla de material propio (capturas, gráficos) con stock y generado.
-- [ ] Estructura variada entre vídeos; nada de plantilla idéntica.
-- [ ] Ritmo humano: 3–5 vídeos/semana, todos revisados.
-- [ ] Contenido sintético realista **marcado** en la subida.
-- [ ] Fuentes citadas en la descripción; sin imágenes de prensa con copyright.
-- [ ] Evitar temas que reciben anuncios limitados (tragedias, violencia, política).
-
-**Nota sobre la API:** los proyectos de API no verificados por Google suben los vídeos como **privados**. Para publicar directamente hay que pasar la auditoría de la API; mientras tanto, se cambia a público a mano tras la revisión. Cuota por defecto: ~10.000 unidades/día (~6 subidas).
-
-**Checklist de calidad por vídeo:**
-- Gancho en los primeros 2–3 s.
-- Ninguna escena con visual que no encaje con lo que se dice.
-- Sin cortes de audio, volumen estable (−14 LUFS).
-- Subtítulos legibles y sin errores.
-- Datos verificados contra las fuentes.
+En cada una, el archivo que se puede editar está en la carpeta del run y se vuelve a leer al aprobar.
 
 ---
 
-## 11. Roadmap
+## 11. Calidad y políticas de YouTube
 
-1. **Núcleo:** `write_script` → `voice` → `visuals` (solo stock) → `assemble`, con una noticia fija.
-2. Subtítulos palabra a palabra y música con *ducking*.
-3. Fallback a Flux vía ComfyUI y selector de stock con visión.
-4. `research` + `review` con bucle de revisión.
-5. Interrupts de revisión humana y reanudación con `SqliteSaver`.
-6. Ingesta RSS + `select_news`.
-7. `metadata` + `upload` a YouTube.
-8. Formato largo, miniaturas y capítulos.
-9. Capturas y gráficos propios como tipos de visual.
-10. LangFuse y métricas (retención, CTR) para mejorar los prompts.
+**Política de "contenido no auténtico"** (YPP, desde julio de 2025): YouTube no monetiza contenido producido en masa o con plantilla.
+
+- [x] Revisión humana en cada paso (tema, enfoque, esquema, guion, montaje). No hay modo automático para publicar.
+- [x] Cada dato del guion sale de un hecho con fuente; un revisor marca lo que no, y los hechos dudosos los decides tú.
+- [x] Fuentes en la descripción y créditos de Wikimedia. Nunca fotos de prensa.
+- [x] Contenido sintético **marcado** al subir si hay imágenes generadas o archivos que no son de stock.
+- [ ] Voz: hoy es una voz **diseñada** con Qwen3-TTS, siempre la misma en todos los vídeos. Para más seguridad: tu voz grabada como referencia, o el modo `record` (pendiente).
+- [ ] Material propio: gráficos de datos y capturas de las fuentes (pendiente; hoy los planos `data` y `source` buscan en stock).
+- [ ] Ritmo humano: pocos vídeos por semana, todos revisados.
+
+**Nota sobre la API:** hasta que Google audita el proyecto de API, los vídeos se suben **privados** y se publican a mano en YouTube Studio. Cuota: 10.000 unidades/día (una subida ~1.600, miniatura ~50, subtítulos ~400). La miniatura necesita un canal verificado por teléfono.
+
+**Checklist por vídeo:**
+- La sorpresa en los primeros 2–3 s, sin destripar el final.
+- Ningún plano que no encaje con lo que se dice (revísalo en `montaje/lista.md`).
+- Volumen estable (−14 LUFS) y música por debajo de la voz.
+- Subtítulos sin errores (salen del guion, no de la transcripción).
+- Hechos dudosos de la revisión comprobados.
+
+---
+
+## 12. Pendiente
+
+- **Fase 2 (imágenes):**
+  - `brief` y `beats` pensados para generar (enfoque según el tipo de plano, estilo fijo de Datazo, sin sujetos repetidos);
+  - el `brief` no debe prohibir las imágenes habituales del tema;
+  - cada plano con una búsqueda genérica de respaldo;
+  - juez sobre las imágenes generadas y una regeneración;
+  - imágenes con licencia de las fuentes (NASA, ESA, papers CC BY) con su crédito en pantalla.
+- **Fase 3:** el *datazo* en pantalla, una tarjeta animada hecha por código con la cifra que sorprende.
+- **Gráficos y capturas** para los planos `data` y `source`.
+- **Paquete antes que el guion:** título y texto de la miniatura en la pausa del enfoque, texto en pantalla los primeros 2–3 s, 3 opciones de título y miniatura vertical para shorts.
+- **Señales de demanda** en el buscador de temas (autocompletado y vistas de YouTube).
+- **Generación:** si una imagen se rechaza en OpenRouter, reintentar o saltar solo esa (hoy pasa todas las que quedan a ComfyUI).
+- **Modelo local de respaldo** (Gemma 4 en LM Studio) en vez de Nemotron, que a veces no cierra el JSON.
+- **Modo `record`** de la voz.
+- **Retención:** tras 5–10 vídeos, leer las curvas de YouTube Studio y relacionar las caídas con las escenas (se conocen sus tiempos).

@@ -18,9 +18,12 @@ audio and its word times exist (a scene can have several visuals).
 """
 from typing import Literal, TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 Format = Literal["short", "long"]
+# news: something that has just happened; explainer: something that does not expire (how it works,
+# why it is so). It decides where the research looks (graph/nodes/research.py)
+VideoType = Literal["news", "explainer"]
 # What a beat needs to be shown (graph/nodes/beats.py, prompts/beats.md)
 BeatKind = Literal["entity", "generic", "data", "source", "abstract"]
 # What a section does in the story (prompts/outline.md); a long video repeats tension-development-reveal
@@ -28,9 +31,17 @@ SectionRole = Literal["hook", "context", "tension", "development", "reveal", "co
 
 
 # ---------------------------------------------------------------- research
-class SearchQueries(BaseModel):
+class SearchPlan(BaseModel):
+    video_type: VideoType = Field(description="news = cuenta algo que acaba de pasar (un lanzamiento, un descubrimiento, "
+                                              "un anuncio con fecha); explainer = cuenta algo que no caduca (cómo "
+                                              "funciona algo, por qué pasa, ventajas e inconvenientes de una técnica, "
+                                              "la historia de un invento)")
     queries: list[str] = Field(min_length=1, max_length=10,   # a cap: small local models loop and never close the list
-                               description="Búsquedas de noticias, en español, distintas entre sí")
+                               description="Búsquedas en español, distintas entre sí: para un buscador de noticias "
+                                           "si es news; para un buscador general si es explainer")
+    wikipedia: list[str] = Field(default_factory=list, max_length=3,
+                                 description="explainer: 1-2 artículos de Wikipedia que lo explican, como 'es:Título' "
+                                             "o 'en:Title' (el nombre del artículo, no una frase); news: []")
 
 
 class FactDraft(BaseModel):
@@ -38,8 +49,16 @@ class FactDraft(BaseModel):
                                   "(quién, qué, cuándo, cifra). Opiniones solo atribuidas: 'Según X, ...'")
 
 
+MAX_FACTS = 30                # per text: more are cut, not rejected (a lost call loses the whole text)
+
+
 class FactsDraft(BaseModel):
-    facts: list[FactDraft] = Field(max_length=25, description="Los datos del artículo relevantes para el tema; [] si no hay")
+    facts: list[FactDraft] = Field(description="Los datos del artículo relevantes para el tema; [] si no hay")
+
+    @field_validator("facts", mode="before")
+    @classmethod
+    def at_most(cls, value):
+        return value[:MAX_FACTS] if isinstance(value, list) else value
 
 
 class Fact(TypedDict, total=False):
@@ -87,18 +106,19 @@ class AnglesDraft(BaseModel):
 class OutlineSectionDraft(BaseModel):
     title: str = Field(description="Título corto de la sección (para el esquema, no se narra)")
     role: SectionRole = Field(description="Función en la historia: hook = engancha y plantea la pregunta; "
-                                          "context = lo mínimo para entenderla; tension = el conflicto o el "
-                                          "problema; development = causas, consecuencias, posturas; reveal = el "
-                                          "dato o giro que cambia la mirada; conclusion = responde la pregunta")
+                                          "context = lo mínimo para entenderla; tension = el problema o lo que no "
+                                          "cuadra; development = cómo funciona, causas, consecuencias, comparaciones; "
+                                          "reveal = el dato o giro que cambia la mirada (el 'ah, por eso'); "
+                                          "conclusion = responde la pregunta y vuelve al gancho")
     goal: str = Field(description="Qué cuenta esta sección y por qué importa, en 1-2 frases")
     emotion: str = Field(description="Qué debe sentir el espectador aquí, en 1-3 palabras (curiosidad, "
                                      "sorpresa, indignación, alivio...)")
     facts: list[int] = Field(default_factory=list, max_length=60,     # deep_research adds the ones it finds
                              description="Números de los hechos que usa esta sección")
     questions: list[str] = Field(default_factory=list, max_length=3,
-                                 description="Solo vídeos largos: 1-3 cosas concretas que hay que AVERIGUAR para "
-                                             "contar esta sección y que los hechos no dicen (antecedentes, cómo "
-                                             "funciona, quién es quién, cifras de contexto); [] si no hace falta")
+                                 description="Cosas concretas que hay que AVERIGUAR para contar esta sección y que "
+                                             "los hechos no dicen (cómo funciona, antecedentes, quién es quién, cifras "
+                                             "de referencia): 1-3 en vídeos largos, 0-2 en shorts; [] si no hace falta")
 
 
 class OutlineDraft(BaseModel):
@@ -110,6 +130,7 @@ class OutlineDraft(BaseModel):
 
 class OutlineSection(OutlineSectionDraft):
     words: int                # narration words for this section (set by code from the format)
+    facts: list[int] = Field(default_factory=list)   # no cap: deep_research adds up to 15 per text read
 
 
 class Outline(BaseModel):
@@ -125,6 +146,24 @@ class SceneDraft(BaseModel):
 
 class SectionDraft(BaseModel):
     scenes: list[SceneDraft] = Field(min_length=1, max_length=20, description="Escenas de esta sección, en orden")
+
+
+PLAN_HELP = ("El plan ANTES de escribir, en pocas líneas: la pregunta que abre, dónde se complica y dónde se "
+             "resuelve, los nuevos ganchos, dónde va el dato potente y cómo cierra. No se narra")
+
+
+class SectionPlanDraft(BaseModel):
+    """One section of a long video in one call: its plan first (written before the scenes), then its scenes."""
+    plan: str = Field(description=PLAN_HELP + " (el de esta sección, con su puente a la siguiente)")
+    scenes: list[SceneDraft] = Field(min_length=1, max_length=20, description="Escenas de esta sección, en orden")
+
+
+class ScriptDraft(BaseModel):
+    """A whole script in one call (shorts): the plan first (it is written before the scenes), then one
+    entry per section of the outline."""
+    plan: str = Field(description=PLAN_HELP + " (con el bucle: cómo enlaza la última frase con la primera)")
+    sections: list[SectionDraft] = Field(min_length=1, max_length=12,
+                                         description="Las secciones del esquema, en su orden, cada una con sus escenas")
 
 
 class Scene(SceneDraft):
@@ -159,6 +198,30 @@ class Script(BaseModel):
         return sum(len(s.narration.split()) for s in self.scenes)
 
 
+# ------------------------------------------------------------------ review
+class ReviewIssue(BaseModel):
+    scene: int = Field(description="Número de la escena; 0 si es del vídeo entero")
+    problem: str = Field(description="Qué falla, en una frase")
+    fix: str = Field(description="Cómo arreglarlo, concreto (la frase nueva o qué cambiar), solo con los hechos")
+    serious: bool = Field(description="true si hay que arreglarlo antes de grabar la voz: un dato que no sale de los "
+                                      "hechos o dice más que ellos, un vídeo que no responde a su tema, algo clave "
+                                      "que no se entiende, un gancho o un cierre que no funcionan")
+
+
+class DubiousFact(BaseModel):
+    fact: int = Field(description="Número del hecho")
+    why: str = Field(description="Por qué parece un error, en una frase (lo comprobará el autor)")
+
+
+class ScriptReview(BaseModel):
+    summary: str = Field(description="Lo más importante de la revisión, en 1-2 frases, sin elogios")
+    issues: list[ReviewIssue] = Field(default_factory=list, max_length=12,
+                                      description="Lo que hay que arreglar, de más a menos importante (como mucho 8); "
+                                                  "[] si el guion está bien")
+    dubious: list[DubiousFact] = Field(default_factory=list, max_length=10,
+                                       description="Hechos que usa el guion y parecen un error del artículo; [] si no hay")
+
+
 # ------------------------------------------------------------ brief/beats/visuals
 class MetaphorDraft(BaseModel):
     phrase: str = Field(description="La expresión figurada, copiada del guion (p. ej. 'la burbuja está a punto de estallar')")
@@ -167,7 +230,7 @@ class MetaphorDraft(BaseModel):
 
 
 class BriefDraft(BaseModel):
-    universe: list[str] = Field(min_length=4, max_length=15,
+    universe: list[str] = Field(min_length=4, max_length=20,
                                 description="Objetos, lugares, personas y acciones FILMABLES de ESTE vídeo, incluido el "
                                             "problema y las consecuencias de las que habla el guion, en INGLÉS y como se "
                                             "buscarían en un banco de stock (1-3 sustantivos cada uno): 'for rent sign', "
@@ -181,8 +244,23 @@ class BriefDraft(BaseModel):
     style: str = Field(description="Estilo común de las imágenes, en INGLÉS, 10-25 palabras: SOLO tipo de foto, luz, "
                                    "paleta y encuadre, sin ningún objeto, lugar ni fondo (va al final de cada prompt)")
 
+    @field_validator("universe", "avoid", "metaphors", mode="before")
+    @classmethod
+    def at_most(cls, value, info):
+        """More than the field's max_length is cut, not rejected (2026-10-15: 11 avoid lost Sonnet's whole brief)."""
+        limit = next(m.max_length for m in cls.model_fields[info.field_name].metadata if hasattr(m, "max_length"))
+        return value[:limit] if isinstance(value, list) else value
+
+
+ShotLook = Literal["photo", "visualization"]
+
 
 class ShotDraft(BaseModel):
+    look: ShotLook = Field(default="photo",
+                           description="photo = algo que una cámara puede grabar; visualization = algo invisible por su "
+                                       "escala o su naturaleza (un átomo, un núcleo, una molécula, una célula por dentro, "
+                                       "un campo magnético, un agujero negro): se enseña con una visualización científica "
+                                       "fotorrealista, como en un documental")
     subject: str = Field(description="Qué se ve, en español, concreto (p. ej. 'sede del Banco de España en Madrid', "
                                      "'pareja joven revisando facturas en la cocina')")
     must_show: list[str] = Field(min_length=1, max_length=2,
@@ -234,12 +312,18 @@ class Beat(TypedDict, total=False):
     must_show: list[str]      # this shot's (old beats.json: the idea's)
     must_not_show: list[str]  # the idea's; the brief's `avoid` counts for every beat
     subject: str              # this shot of the idea (a split idea: another shot per part)
+    look: str                 # ShotLook: photo | visualization (old beats.json: photo)
     queries: list[str]        # this shot's stock searches, most concrete first (old beats.json: the idea's;
                               # older ones: "query", one string)
     prompt: str
 
 
 class VisualChoice(BaseModel):
+    seen: list[str] = Field(default_factory=list, max_length=16,
+                            description="PRIMERO, qué es cada imagen de verdad, en el orden de la cuadrícula, 3-10 "
+                                        "palabras cada una, sin interpretarla para que encaje: lo que reconocería "
+                                        "cualquiera ('1: satélite en una sala blanca', '2: gota de agua flotando', "
+                                        "'3: mesa óptica con un láser azul')")
     reason: str = Field(description="En una frase: qué muestra la imagen elegida y por qué encaja con lo que se "
                                     "dice (o por qué ninguna encaja)")
     best: int = Field(description="Número de la imagen que mejor muestra lo que se dice; 0 si ninguna")
@@ -277,10 +361,14 @@ class SceneVisual(TypedDict, total=False):
 class VideoState(TypedDict, total=False):
     run_id: str
     format: Format
-    topic: str                            # what the video is about (given by you)
+    topic: str                            # what the video is about (--topic, or chosen at choose_topic)
+    topic_candidates: list[dict]          # find_topics: the topics to choose from (data/temas/registro.json items)
+    topics_seen: list[str]                # their ids, so "other topics" shows new ones
+    topic_id: str                         # the chosen one's id in the record
     notes: str                            # your angle / opinion / what to stress (optional)
     urls: list[str]                       # articles you want used (optional)
     manual: bool                          # --manual: you write the script and bring the visuals
+    video_type: VideoType                 # news | explainer (--type, or the research LLM decides it)
     manual_visuals: dict[int, list[dict]] # manual: scene id -> your marks [{"word", "path"}] (graph/manual.py)
     sources: list[Source]                 # articles the research read
     facts: list[Fact]                     # the ONLY data the script may use
@@ -293,9 +381,13 @@ class VideoState(TypedDict, total=False):
     extra_urls: dict[int, list[str]]      # review_research: section -> your links, to be read
     script: dict                          # Script.model_dump()
     script_warnings: list[str]            # what write_script could not fix (e.g. length)
-    review_ok: bool
-    review_feedback: str
-    revisions: int
+    script_plan: str                      # write_script's plan (the tension before the scenes): <run>/plan_guion.md
+    script_requests: str                  # what the last rewrite was asked (yours, the reviewer's): the reviewer
+                                          # checks it was done
+    script_review: dict                   # review_script's last review: {summary, issues, dubious}
+    script_notes: list[dict]              # review_script's serious issues: write_script fixes them
+    review_feedback: str                  # your reason at the choose_script pause: write_script rewrites with it
+    revisions: int                        # review_script's automatic rewrites (review.max_revisions)
     audio: dict[int, SceneAudio]          # scene id -> audio (+ word times, from align)
     brief: dict                           # BriefDraft.model_dump(): the visual universe of the video
     beats: list[Beat]                     # what is shown and from which word

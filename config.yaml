@@ -1,5 +1,12 @@
 # Configuración del pipeline. Las claves (API keys) van en el .env, nunca aquí.
-format: long                  # long (8-13 min) | short (45-60 s)
+format: long                  # long (~5 min) | short (~45 s)
+
+# El canal: entra en todos los prompts (src/prompts/), así que otro canal es otro bloque como este.
+channel:
+  # {{canal}} en los prompts: quién es, en una frase ("Eres el guionista de {{canal}}")
+  description: "Datazo, un canal de YouTube en español de ciencia y tecnología: cada vídeo gira alrededor de un dato que sorprende y lo explica hasta que se entiende"
+  # {{temas}} en los prompts: de qué van sus vídeos (los ejemplos de los prompts se reparten entre ellos)
+  topics: "espacio, física, salud, biología, energía, clima, informática, inteligencia artificial, materiales, ingeniería, inventos"
 
 llm:
   # Proveedores compatibles con la API de OpenAI. api_key: valor fijo;
@@ -34,11 +41,20 @@ llm:
   # Respaldo de los nodos de texto: si Sonnet falla, ese nodo sigue con este el resto del run.
   # Nemotron 3 Super gratis. Usa su propia temperatura, no la del nodo.
   cloud:        {model: "nvidia/nemotron-3-super-120b-a12b:free"}
-  research:     {temperature: 0.3, fallback: cloud}
-  deep_research: {temperature: 0.3, fallback: cloud}   # vídeos largos: el contexto de cada sección
+  research:     {temperature: 0.3, fallback: cloud}     # sus búsquedas (los hechos: facts)
+  deep_research: {temperature: 0.3, fallback: cloud}   # las búsquedas de cada sección (los hechos: facts)
+  # Extraer los hechos de cada texto leído (research y deep_research): la mitad del gasto de un vídeo
+  # con Sonnet (~0,50 $ en uno largo). Probado 2026-10-14 en el run del reloj nuclear
+  # (scripts/compare_facts.py): con los prompts de "no te dejes nada", Haiku 5.5 sacó más datos que
+  # Sonnet con los de antes (238 frente a 181), sin errores, por ~0,03 $. Si falla, Sonnet (research).
+  facts:        {model: "anthropic/claude-haiku-5.5", temperature: 0.3, fallback: research}
   angles:       {temperature: 0.9, fallback: cloud}   # 3 enfoques distintos
   outline:      {temperature: 0.3, fallback: cloud}
   write_script: {temperature: 0.8, fallback: cloud}
+  # Revisor del guion: lo lee entero con los hechos delante antes de tu pausa (datos que no salen de
+  # los hechos, tema sin responder, jerga, gancho y cierre; hechos dudosos de los artículos). Una
+  # llamada por revisión; lo grave se reescribe solo (review.max_revisions).
+  review_script: {temperature: 0.2, fallback: cloud}
   # Plan visual (brief: el universo visual del vídeo; beats: las ideas y sus planos). Es donde más
   # se nota un modelo fuerte (traducir metáforas a planos filmables) y son 2-5 llamadas por vídeo.
   # Con un modelo de OpenRouter (OPENROUTER_API_KEY en el .env): structured_output: json_schema
@@ -53,12 +69,17 @@ llm:
   # Título, resumen, etiquetas y texto de la miniatura para YouTube (scripts/prepare_upload.py,
   # fuera del pipeline; una llamada por vídeo).
   publish:      {temperature: 0.7, fallback: cloud}
+  # Buscador de temas (run_pipeline.py sin --topic, o scripts/find_topics.py; una llamada: ~0,02-0,05 $,
+  # y ninguna si no hay entradas nuevas en los feeds).
+  topics:       {temperature: 0.4, fallback: cloud}
   # Juez de visuals: elige entre candidatos MIRANDO las imágenes (necesita visión). Una llamada por
-  # fragmento: ~20 en un short, 150-250 en un largo. Gemma 4 31B de pago (0,09 $ / 0,34 $ por millón:
-  # céntimos por vídeo, sin 429); si falla, el mismo gratis.
+  # fragmento: ~20 en un short, ~40 en un largo. Haiku 5.5 (~0,0006 $ por plano, ~0,02 $ por vídeo largo).
+  # Prueba 2026-10-15 (16 planos x 3, respuestas fijadas antes; data/runs/20261013-025807/prueba_juez):
+  # con el prompt nuevo y las fichas, Haiku aprobó 1 imagen mala de 48 y Gemma 4 31B 5 (Gemma pone
+  # 9-10 a casi todo y se guía por "qué debería verse", no por la narración). Si falla: Gemma gratis.
   # No sirven: Qwen2.5 VL 7B local (confundía la nota con el número de imagen y lo rechazaba todo),
   # thinkingmachines/inkling:free (403, "only available on agentic harnesses").
-  visuals:      {model: "google/gemma-4-31b-it", temperature: 0.0, max_tokens: 8192,
+  visuals:      {model: "anthropic/claude-haiku-5.5", temperature: 0.0, max_tokens: 8192,
                  structured_output: function_calling, fallback: visuals_cloud}
   visuals_cloud: {model: "google/gemma-4-31b-it:free", temperature: 0.0, max_tokens: 8192,
                   structured_output: function_calling}
@@ -105,21 +126,26 @@ visuals:
   # misiones, la Tierra desde órbita; dominio público), wikimedia (fotos de Wikimedia Commons de cosas
   # reales con nombre; licencias libres que piden atribución: se apuntan en <run>/creditos.txt).
   # Las fuentes de un tipo se reparten los max_candidates (la primera, primero): cada fuente de más
-  # quita sitios a stock, la única con vídeo. Por eso, por defecto, solo wikimedia en entity.
-  # En un vídeo de espacio/ciencia, añade nasa a mano (p. ej. abstract: [stock, nasa]).
+  # quita sitios a stock, la única con vídeo.
+  # nasa en todos los vídeos: sus fotos de naves y salas blancas se colaban como "reloj atómico" o
+  # "cámara de vacío" con un juez sin fichas; con las fichas (título y descripción de la NASA) Haiku las
+  # rechaza y acepta las que sí son del tema (2026-10-15, data/runs/20261013-025807/prueba_juez).
   sources:
-    entity: [stock, wikimedia]
-    generic: [stock]
+    entity: [stock, wikimedia, nasa]
+    generic: [stock, nasa]
     data: [stock]
     source: [stock]
-    abstract: [stock]
-  beat_seconds: {short: [2, 4], long: [5, 10]}  # duración de cada plano; uno más largo (+20 %) se parte.
-                              # long antes [3, 6]: ~200 planos en 10 min; con [5, 10], ~100
+    abstract: [stock, nasa]
+  beat_seconds: {short: [2, 4], long: [4, 6]}  # duración de cada plano; uno más largo (+20 %) se parte.
+                              # long: [5, 10] hasta 2026-10-15 (con photo_max 5 se partían en fotos de 2-5 s);
+                              # el autor quiere cada imagen 4-6 s (~60 planos en 5 min)
   # Una foto no se ve más de esto (solo vídeos largos: en los shorts los planos ya son cortos). Un
   # plano más largo busca primero un VÍDEO; si no lo hay, se reparte entre varias imágenes
   # (montaje/05.jpg + 05b.jpg): otra buena o, si no, la misma escena generada con otro encuadre.
-  photo_max_seconds: {long: 5}
-  min_beat_seconds: 1.5       # uno más corto se une al anterior
+  # 7.5: por encima de lo que dura un plano (6 + 20 %), así no parte uno de 7 s en dos de 3,5.
+  photo_max_seconds: {long: 7.5}
+  # Uno más corto se une al anterior (dentro de su escena: una escena entera más corta se queda así).
+  min_beat_seconds: {short: 1.5, long: 4}
   max_candidates: 16          # candidatos por fragmento (sumando fuentes y búsquedas)
   embed_model: google/siglip2-base-patch16-224  # primer filtro: parecido texto-imagen
   top_k: 8                    # los mejores según SigLIP 2 que ve el modelo con visión
@@ -131,13 +157,19 @@ visuals:
   #   comfy:      Z-Image Turbo en local, gratis (ComfyUI arrancado; sección comfy).
   # Otros modelos de imagen en OpenRouter: google/gemini-3-pro-image (Nano Banana Pro, mejor y
   # más caro), black-forest-labs/flux-3-image, krea/krea-2-large, bytedance-seed/seedream-5-0-pro.
-  generator: openrouter       # en prueba; antes comfy
+  # 2026-10-14: Nano Banana para todas (~0,067 $ por imagen a 1K, ~2-3 $ por vídeo largo: lo que
+  # más gasta del vídeo; el coste real de cada una, en <run>/costes.md, visuals_images). ComfyUI de
+  # respaldo: arráncalo antes del run, por si Nano Banana falla o rechaza una imagen.
+  generator: openrouter
   generate_model: google/gemini-3.1-flash-image   # Nano Banana 2 (el 2.1 daba 429: cupo de Google agotado)
   generate_resolution: 1K     # 1K | 2K | 4K (no todos los modelos lo admiten: quítalo si da error).
                               # 1K: el vídeo es 1080p como mucho, más no se ve y cuesta más
   # Estilo común a las imágenes generadas (va al final de cada prompt, en inglés). Solo si el
   # brief no da uno (brief.json: style)
   image_style: "documentary photograph, natural light, realistic, candid, 35mm lens, shallow depth of field"
+  # Estilo de los planos de visualización científica (lo que no se puede fotografiar: un átomo, una
+  # molécula, un campo magnético; beats.json: look). Va al final de su prompt en vez del de foto.
+  visualization_style: "photorealistic scientific visualization as in a science documentary, dark background, soft volumetric glow, cinematic lighting, no text, no labels, no diagrams"
   # Fuente stock: bancos en orden de preferencia; uno sin clave en el .env se salta.
   # Límites: Pixabay 100 búsquedas/min, Pexels 200/hora (hasta 6 búsquedas por fragmento: 3
   # consultas x vídeo/foto; las repetidas salen de la caché). Para un vídeo largo, Pexels sube
@@ -163,7 +195,10 @@ comfy:
 video:
   # seconds: [mín, máx] de narración; el guion se pide para target_seconds.
   # sections: [mín, máx] secciones del esquema (el guion se escribe sección a sección).
-  short:  {width: 1080, height: 1920, target_seconds: 55, seconds: [45, 60], scenes: [6, 10], sections: [3, 3]}
+  # short: antes 55 s y luego 45 s (~112 palabras: en Fervo no cabían las cifras ni la comparación).
+  # 2026-10-12: ~75 s (~187 palabras) para explicar; probar 4-6 y comparar en YouTube Studio la
+  # duración media vista y el % que lo ve en vez de deslizar con los de 45 s.
+  short:  {width: 1080, height: 1920, target_seconds: 75, seconds: [65, 85], scenes: [10, 16], sections: [3, 4]}
   long:   {width: 1920, height: 1080, target_seconds: 300, seconds: [270, 330], scenes: [24, 38], sections: [4, 6]}
   words_per_second: 2.5       # ritmo de narración en español (~150 palabras/min): fija la longitud del guion
   fps: 30
@@ -186,27 +221,84 @@ video:
   # 2.5D en las fotos: el modelo de profundidad (GPU, .venv-tts; ~100 MB, se descarga la primera vez)
   # separa primer plano y fondo y el primer plano se mueve un poco más. strength: cuánto (sutil: 0.015-0.03).
   # Si falla, movimiento normal. Las fotos planas (gráficos, capturas) se mueven sin profundidad.
-  parallax: {enabled: true, strength: 0.02, model: depth-anything/Depth-Anything-V2-Small-hf}
+  # Apagado (2026-10-15): al autor no le gusta; las fotos se mueven igual (zoom, paneos), sin profundidad.
+  parallax: {enabled: false, strength: 0.02, model: depth-anything/Depth-Anything-V2-Small-hf}
   font: Arial                 # subtítulos; se busca en fonts_dir y, si está vacía, en las del sistema
   fonts_dir: assets/fonts
 
 research:
-  queries: 4                  # búsquedas de noticias que genera el LLM a partir del tema
+  # Dos tipos de vídeo (--type en run_pipeline.py; sin él, lo decide el modelo a partir del tema):
+  #   news:      algo que acaba de pasar -> búsquedas de noticias
+  #   explainer: algo que no caduca (cómo funciona, por qué pasa) -> la web general + Wikipedia
+  queries: 4                  # búsquedas que genera el LLM a partir del tema
   results_per_query: 5
-  max_articles: {short: 3, long: 6}
+  max_articles: {short: 4, long: 6}   # textos leídos (Wikipedia incluida); short antes 3
   max_article_chars: 6000     # ~1.700 tokens por artículo al extraer hechos
   region: es-es               # solo DuckDuckGo; el buscador se elige con SEARCH_PROVIDER en el .env (tavily)
+  # Webs que nunca son una fuente: tiendas, anuncios, redes sociales y foros. "forocoches.com" es esa
+  # web y sus subdominios; un nombre sin punto ("mercadolibre") es esa web en cualquier país.
+  # Tus --url se leen siempre. (Un vídeo de motor sacó datos de un anuncio de MercadoLibre.)
+  skip_domains: [mercadolibre, mercadolivre, ebay, aliexpress, temu, wallapop, milanuncios, coches.net,
+                 autoscout24, pinterest, facebook.com, instagram.com, tiktok.com, x.com, twitter.com,
+                 reddit.com, quora.com, forocoches.com, youtube.com]
   # Investigación por secciones (nodo deep_research, tras aprobar el esquema): el CONTEXTO de cada
-  # sección (historia, cómo funciona, protagonistas, riesgos...) en la web y en Wikipedia. Solo
-  # vídeos largos: 5 minutos no salen de seis artículos de la misma noticia.
-  deep: {short: false, long: true}
+  # sección (cómo funciona, historia, protagonistas, riesgos...) en la web y en Wikipedia. Solo si
+  # alguna sección del esquema tiene preguntas; luego para en review_research.
+  # short antes false: un minuto sobre cómo funciona algo no sale de una cita en un periódico.
+  deep: {short: true, long: true}
   deep_sources_per_section: 4     # textos leídos por sección (web + Wikipedia); ~1 llamada al LLM cada uno
   deep_results_per_query: 3       # resultados de cada búsqueda web
   words_per_fact: 22              # cuánto guion da un dato: una sección con pocos datos se acorta
                                   # (nunca se rellena) y una sin datos se quita
 
+topics:
+  # Buscador de temas (run_pipeline.py sin --topic, o scripts/find_topics.py): lee estos feeds, el
+  # modelo puntúa las entradas NUEVAS (las que no están en registro.json) para el canal y deja
+  # data/temas/<fecha>.md con los candidatos y el comando de cada uno (--url a sus fuentes). url: el feed o la portada de la web (se busca su feed). kind: solo orientativo.
+  # skip: trozos de URL que se descartan (secciones de ofertas, análisis de productos, historia...).
+  # Los que fallen salen al final del .md. Comprobados 2026-10-12; no dan feed o lo bloquean: SINC,
+  # EurekAlert (404) y New Scientist (406).
+  feeds:
+    - {url: "https://www.xataka.com/feedburner.xml", name: Xataka, kind: tecnología,
+       skip: [/seleccion/, /analisis/, /cine-y-tv/, /magnet/, /empresas-y-economia/]}
+    - {url: "https://www.muyinteresante.com/rss", name: Muy Interesante, kind: ciencia,
+       skip: [/bazar/, /historia/, /actualidad/]}
+    - {url: "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/ciencia/portada", name: El País Ciencia, kind: ciencia}
+    - {url: "https://www.sciencedaily.com/rss/all.xml", name: ScienceDaily, kind: ciencia}
+    - {url: "https://phys.org/rss-feed/", name: Phys.org, kind: ciencia}
+    - {url: "https://www.nature.com/nature.rss", name: Nature, kind: ciencia}
+    - {url: "https://www.nasa.gov/feed/", name: NASA, kind: espacio}
+    - {url: "https://www.esa.int/rssfeed/Our_Activities/Space_Science", name: ESA, kind: espacio}
+    - {url: "https://www.quantamagazine.org/feed/", name: Quanta, kind: ciencia}
+    - {url: "https://arstechnica.com/science/feed/", name: Ars Technica Ciencia, kind: ciencia}
+    - {url: "https://www.technologyreview.com/feed/", name: MIT Technology Review, kind: tecnología,
+       skip: [/the-download-]}                                   # resúmenes diarios de otras noticias
+    - {url: "https://spectrum.ieee.org/feeds/feed.rss", name: IEEE Spectrum, kind: tecnología,
+       skip: [knowledgehub.wiley.com, career, -ieee]}           # patrocinado y promoción del IEEE
+    - {url: "https://www.wired.com/feed/category/science/latest/rss", name: Wired Ciencia, kind: ciencia}
+    - {url: "https://www.space.com/feeds/all", name: Space.com, kind: espacio,
+       skip: [/entertainment/, on-this-day-in-space, space-photo-of-the-day]}
+    - {url: "https://www.scientificamerican.com/platform/syndication/rss/", name: Scientific American,
+       kind: ciencia, skip: [/podcast/]}
+    - {url: "https://techcrunch.com/feed/", name: TechCrunch, kind: tecnología,
+       skip: [techcrunch-disrupt, /sponsored/]}                 # promoción de su propio evento
+    # De pago: el titular sirve como pista, pero el artículo no se puede leer (el research busca
+    # el mismo tema en otras webs).
+    - {url: "https://www.theinformation.com/feed", name: The Information, kind: tecnología}
+  # Probados 2026-10-12 sin feed: tech.yahoo.com (ninguna sección tiene RSS), es.tradingview.com/news;
+  # bloquean (403): mdpi.com. Finanzas, fuera del canal: es.investing.com/rss/news.rss (funciona).
+  days: 7                     # solo entradas de los últimos N días (--days)
+  max_per_feed: 15            # para que una web con muchas entradas no se coma la lista
+  max_entries: 250            # las que ve el modelo (~80 tokens cada una: 250 son ~0,04 $ con Sonnet);
+                              # si se pasa, se quedan las más recientes
+  max_candidates: 10          # temas propuestos (--top)
+  reserve_days: 30            # un tema propuesto y no elegido se sigue ofreciendo estos días
+  out_dir: data/temas         # aquí van los .md de cada búsqueda y registro.json (todos los temas y su estado)
+
 review:
-  max_revisions: 2
+  # Veces seguidas que review_script manda reescribir el guion por algo grave antes de tu pausa (cada
+  # una: una llamada al guionista y otra al revisor). Lo que quede, lo ves en la pausa y en script.md.
+  max_revisions: 1
 
 youtube:
   # Fuera del pipeline: scripts/prepare_upload.py (run -> carpeta lista) y scripts/upload_youtube.py

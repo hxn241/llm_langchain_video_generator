@@ -36,12 +36,13 @@ import hashlib
 import itertools
 import json
 import math
+import re
 
 from graph import manual, montage
 from graph.nodes.beats import plain
 from graph.state import Script, VisualChoice
 from prompts import load_prompt
-from services import comfy, contact_sheet, image_api, stock, workers
+from services import comfy, contact_sheet, costs, image_api, stock, workers
 from services.settings import load_settings, runs_dir
 
 NODE = "visuals"
@@ -53,7 +54,10 @@ NODE = "visuals"
 GRAPHIC_WORDS = {"chart", "charts", "graph", "graphs", "graphic", "infographic", "diagram", "icon", "icons",
                  "arrow", "arrows", "pie", "percent", "percentage", "symbol", "question",
                  "concept", "illustration", "animation", "3d", "render", "cartoon", "vector", "logo"}
-SEARCH_VERSION = 2            # part of the cache key: bump it when what a search returns changes
+# ...except in a visualization shot (an atom, a magnetic field): there a 3D animation is what is wanted
+VISUALIZATION_WORDS = {"animation", "3d", "render"}
+SEARCH_VERSION = 3            # part of the cache key: bump it when what a search returns changes
+                              # (3: candidates carry their source's caption, for the judge)
 # A long beat's extra generated images: the same prompt with another framing, so they differ
 REFRAMES = ["Another view of the same moment: a wide shot showing the whole place.",
             "Another view of the same moment: a close-up of one telling detail.",
@@ -65,7 +69,8 @@ def queries_of(beat):
     """The beat's stock searches, most concrete first (beats.json made before "queries": one "query"),
     without those that would bring graphics."""
     queries = [q for q in beat.get("queries") or [beat.get("query", "")] if q.strip()]
-    return [q for q in queries if not GRAPHIC_WORDS & set(q.lower().replace("-", " ").split())]
+    banned = GRAPHIC_WORDS - VISUALIZATION_WORDS if beat.get("look") == "visualization" else GRAPHIC_WORDS
+    return [q for q in queries if not banned & set(q.lower().replace("-", " ").split())]
 
 
 def interleave(lists):
@@ -127,18 +132,48 @@ def gather(beat, orientation, options, folder, cache):
 # ----------------------------------------------------------------- choose
 def choose(hub, beat, scene, candidates, aspect, brief=None):
     """The vision model sees the candidates in a grid -> (candidate or None, VisualChoice)."""
+    sheet = contact_sheet.grid([open(c["thumb_path"], "rb").read() for c in candidates], aspect)
+    choice = hub.look(load_prompt("visual_choice"), choice_text(beat, scene, candidates, brief), [sheet],
+                      schema=VisualChoice, node=NODE)
+    return (candidates[choice.best - 1] if 1 <= choice.best <= len(candidates) else None), choice
+
+
+def choice_text(beat, scene, candidates, brief=None):
+    """What the judge is told about the grid (also scripts/compare_judge.py, to test other models)."""
     labels = ", ".join(f"{n} {'vídeo' if c['kind'] == 'video' else 'foto'}" for n, c in enumerate(candidates, start=1))
     avoid = list(dict.fromkeys(beat.get("must_not_show", []) + (brief or {}).get("avoid", [])))
-    text = (f"Narración de la escena: \"{scene.narration}\"\n"
+    return (f"Narración de la escena: \"{scene.narration}\"\n"
             f"Fragmento que se está diciendo mientras se ve la imagen: \"{beat['text']}\"\n"
             + (f"La idea que cuenta: {beat['idea']}\n" if beat.get("idea") else "")
             + f"Qué debería verse: {beat['subject']}\n"
+            + ("Tipo de plano: VISUALIZACIÓN CIENTÍFICA (lo que se nombra no se puede fotografiar: vale un render o "
+               "una animación fotorrealista de eso mismo)\n" if beat.get("look") == "visualization" else
+               "Tipo de plano: FOTO o VÍDEO REAL\n")
             + (f"Tiene que verse: {', '.join(beat['must_show'])}\n" if beat.get("must_show") else "")
             + (f"NO debe verse: {', '.join(avoid)}\n" if avoid else "")
+            + captions_text(candidates)
             + f"Hay {len(candidates)} imágenes numeradas ({labels}). ¿Cuál cuenta mejor la idea del fragmento?")
-    sheet = contact_sheet.grid([open(c["thumb_path"], "rb").read() for c in candidates], aspect)
-    choice = hub.look(load_prompt("visual_choice"), text, [sheet], schema=VisualChoice, node=NODE)
-    return (candidates[choice.best - 1] if 1 <= choice.best <= len(candidates) else None), choice
+
+
+def caption_of(candidate):
+    """What the candidate's source says it is (services/stock.py); for one cached before captions, the
+    words of its page's name (Pixabay, Pexels and Commons pages are named after the image)."""
+    if candidate.get("caption"):
+        return candidate["caption"]
+    url = (candidate.get("page_url") or "").rstrip("/")
+    if "nasa.gov" in url:
+        return ""                                   # only an id
+    name = url.split("/")[-1].removeprefix("File:")
+    return re.sub(r"(\.\w+$)|(-?\d+$)", "", name).replace("-", " ").replace("_", " ").strip()
+
+
+def captions_text(candidates):
+    """The judge's lines with each image's caption ("" if none has one)."""
+    lines = [f"{n}: {caption_of(c)[:220]}" for n, c in enumerate(candidates, start=1) if caption_of(c)]
+    if not lines:
+        return ""
+    return ("Fichas de las imágenes (lo que dice su fuente que son; pueden faltar o estar en inglés):\n"
+            + "\n".join(lines) + "\n")
 
 
 def pick(hub, beat, scene, pool, aspect, brief, options, videos_first=False):
@@ -214,6 +249,7 @@ def generate(beats, run_id, folder, width, height, settings):
                         path, cost = image_api.generate(b["prompt"], folder / f"{name}_{key}",
                                                         width, height, model, resolution)
                         spent += cost
+                        costs.record("visuals_images", model, cost=cost)
                     except Exception as e:                    # no credit, rate limit...: the rest locally
                         print(f"  ⚠️  visuals: {model} falló ({str(e)[:200]}); el resto se genera con ComfyUI")
                         paid, path = False, None
@@ -296,6 +332,7 @@ def make_visuals(hub, settings=None):
                                         videos_first=parts > 1)
             log[b["id"]] = {"text": b["text"], "idea": b.get("idea"), "subject": b["subject"], "queries": queries_of(b),
                             "query": picked["query"] if picked else None, "score": choice.score, "reason": choice.reason,
+                            "seen": choice.seen,
                             "picked": picked["page_url"] if picked else None, "used": good,
                             **({"author": picked["author"], "license": picked.get("license")} if good else {})}
             print(f"  · visuals: fragmento {b['id']} ({b['kind']}) -> "

@@ -11,8 +11,9 @@ See src/services/publish.py.
 import argparse
 
 from llmkit import config
-from services import LLMHub
+from services import LLMHub, costs
 from services.publish import prepare
+from services.settings import runs_dir
 
 
 def main():
@@ -21,7 +22,9 @@ def main():
     parser.add_argument("--thumb", type=int, metavar="N", help="thumbnail from montaje/N (default: the first)")
     parser.add_argument("--force", action="store_true", help="overwrite a folder already prepared")
     args = parser.parse_args()
+    costs.start(runs_dir(args.run))                     # the publish call counts in the run's costes.md
     folder, meta = prepare(args.run, LLMHub(), thumb_number=args.thumb, force=args.force)
+    costs.summary(runs_dir(args.run))
     print(f"\nListo para revisar: {config.readable_path(folder)}")
     print(f"  título: {meta['title']}")
     print(f"  miniatura: {meta['thumbnail_text']!r} · IA: {'sí' if meta['synthetic_media'] else 'no'} · "

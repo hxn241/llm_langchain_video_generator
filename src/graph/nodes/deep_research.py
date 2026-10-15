@@ -1,15 +1,17 @@
-"""deep_research 🤖 + review_research ⏸: the CONTEXT each section of a long video needs
-(research.deep in config.yaml: long videos only; shorts go from the outline straight to the script).
+"""deep_research 🤖 + review_research ⏸: the CONTEXT each section of the video needs
+(research.deep in config.yaml, per format; only when some section of the outline has questions:
+otherwise the outline goes straight to the script).
 
-The news research (nodes/research.py) finds the news; six articles about it tell the same thing,
-and ten minutes are not made of news. A long video is the news plus its context: the problem,
-how it works, where it comes from, who is who, the risks, the numbers of reference. So, after
-you approve the outline (each section with the questions it needs answered, prompts/outline.md):
+The first research (nodes/research.py) finds the topic; its articles tell the same thing, and a
+video is more than that: the problem, how it works, where it comes from, who is who, the risks,
+the numbers of reference. A short needs it too: a minute about how something works cannot be made
+of a newspaper quote. So, after you approve the outline (each section with the questions it
+needs answered, prompts/outline.md):
 
 deep_research: for each section with questions
     1. the LLM writes where to look (prompts/deep_research_searches.md): web searches (Tavily or
-       DuckDuckGo, the general web, not only news) and Wikipedia articles (services/wikipedia.py,
-       free API, Spanish and English);
+       DuckDuckGo, the general web, not only news; never research.skip_domains) and Wikipedia
+       articles (services/wikipedia.py, free API, Spanish and English);
     2. up to research.deep_sources_per_section texts are read (paragraphs about the section only)
        and the LLM extracts their facts for that section (prompts/deep_research_facts.md);
     3. the facts join the video's numbered list, with their source and section, and the section
@@ -29,13 +31,13 @@ from urllib.parse import urlparse
 from langgraph.types import Command
 
 from graph.lengths import assign_words, length_targets, words_by_facts
-from graph.script_files import ROLE_LABELS, load_outline, save_outline
+from graph.script_files import ROLE_LABELS, TYPE_LABELS, load_outline, save_outline
 from graph.state import FactsDraft, Outline, SectionSearches
 from llmkit.approval import ask_approval
 from llmkit.web_search import search
 from prompts import load_prompt
 from services import wikipedia
-from services.articles import fetch_article
+from services.articles import blocked, fetch_article
 from services.settings import load_settings, runs_dir
 
 NODE = "deep_research"
@@ -51,8 +53,11 @@ def section_header(state, outline, number):
     section = outline.sections[number - 1]
     plan = "\n".join(f"{n}. [{ROLE_LABELS.get(s.role, s.role)}] {s.title}" + ("   <- ESTA SECCIÓN" if n == number else "")
                      for n, s in enumerate(outline.sections, start=1))
-    parts = [f"Tema del vídeo: {state['topic']}", f"Título: {outline.title}", f"Hilo conductor: {outline.angle}",
-             "", "# Esquema", plan, "", f"# Sección {number}: {section.title}", section.goal]
+    parts = [f"Tema del vídeo: {state['topic']}"]
+    if state.get("video_type"):
+        parts.append(f"Tipo de vídeo: {TYPE_LABELS[state['video_type']]}")
+    parts += [f"Título: {outline.title}", f"Hilo conductor: {outline.angle}",
+              "", "# Esquema", plan, "", f"# Sección {number}: {section.title}", section.goal]
     if section.questions:
         parts += ["", "# Lo que hay que averiguar"] + [f"- {q}" for q in section.questions]
     return parts
@@ -87,6 +92,11 @@ def plan_words(outline, targets, settings):
     return words_by_facts([len(s.facts) for s in outline.sections], targets["words"], words_per_fact)
 
 
+def length_text(seconds):
+    """'45 s' for a short, '4.8 minutos' for a long video."""
+    return f"{seconds:.0f} s" if seconds < 120 else f"{seconds / 60:.1f} minutos"
+
+
 def research_report(outline, targets, settings):
     """What each section has and how long the video comes out (for the pause)."""
     words = plan_words(outline, targets, settings)
@@ -97,15 +107,14 @@ def research_report(outline, targets, settings):
                 "   ⚠️ poco: se acorta" if 1 < n < len(words) and w < base * SHORT_SHARE else "")
         lines.append(f"{n}. {s.title}: {len(s.facts)} datos -> ~{w} palabras{note}")
     pace = settings["video"]["words_per_second"]
-    lines.append(f"-> da para unos {sum(words) / pace / 60:.1f} minutos "
-                 f"(objetivo: {targets['seconds'] / 60:.1f})")
+    lines.append(f"-> da para unos {length_text(sum(words) / pace)} (objetivo: {length_text(targets['seconds'])})")
     return "\n".join(lines)
 
 
 def make_deep_research(hub, settings=None):
     settings = settings or load_settings()
     plan_searches = hub.chain(load_prompt("deep_research_searches"), schema=SectionSearches, node=NODE)
-    extract = hub.chain(load_prompt("deep_research_facts"), schema=FactsDraft, node=NODE)
+    extract = hub.chain(load_prompt("deep_research_facts"), schema=FactsDraft, node="facts")   # a cheaper model
 
     def deep_research(state, config):
         options = settings["research"]
@@ -127,7 +136,8 @@ def make_deep_research(hub, settings=None):
                 for query in plan.web:
                     try:
                         refs += [("url", r["url"]) for r in
-                                 search(query, options.get("deep_results_per_query", 3), news=False)["results"]]
+                                 search(query, options.get("deep_results_per_query", 3), news=False)["results"]
+                                 if not blocked(r["url"], options.get("skip_domains", []))]
                     except Exception as e:                       # one failed search does not stop it
                         print(f"  · deep_research: búsqueda fallida ({query!r}): {e}")
                 todo.setdefault(n, []).extend(refs)

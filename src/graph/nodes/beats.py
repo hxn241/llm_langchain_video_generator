@@ -25,10 +25,13 @@ Saved to <run>/beats.json, plus <run>/manual/prompts_imagenes.md and plan_visual
 beat's prompt, to make an image with your own AI and put it in montaje/ at the review pause).
 `--redo beats` reads it again if it exists and is newer than
 brief.json (not in manual mode: there your marks in guion.md are the source) (edit it: cuts,
-subjects, queries, prompts) and then redoes the visuals; delete it for new beats.
+subjects, queries, prompts) and then redoes the visuals; delete it for new beats. A saved one is
+put on the current voice (retime): after --redo voice or an edited script.json the images still
+appear on their words, with the same plan (no new images to pay for).
 """
 import json
 import math
+from collections import Counter
 from pathlib import Path
 
 from graph import manual
@@ -47,11 +50,26 @@ QUERY_STOPWORDS = {"a", "an", "the", "of", "in", "on", "with", "through", "and",
                    "from", "by", "over", "under"}
 NEGATIONS = {"no", "not", "without", "none", "never", "empty"}   # a search can't ask for an absence: dropped
                               # (cut to 3 words, "space radiator no water" became "space radiator no")
-FIELDS = ("id", "scene", "word", "start", "seconds", "text", "kind", "idea", "must_show", "must_not_show",
+FIELDS = ("id", "scene", "word", "start", "seconds", "text", "kind", "idea", "look", "must_show", "must_not_show",
           "subject", "queries", "prompt", "path")   # beats.json, in this order
+# What cannot be photographed (an atom, a magnetic field) is shown as a scientific visualization: its
+# own style instead of the brief's photographic one (config.yaml: visuals.visualization_style)
+VISUALIZATION_STYLE = ("photorealistic scientific visualization as in a science documentary, dark background, "
+                       "soft volumetric glow, cinematic lighting, no text, no labels, no diagrams")
+# A search used in more shots than this makes a monotonous video (2026-10-15, nuclear clock:
+# "laser optics table" in 12 of 40 shots). Each call plans SCENES_PER_CALL scenes and is told the
+# searches of the scenes planned before (used_queries), since it does not see them otherwise.
+MAX_QUERY_REPEATS = 3
 
 
-def beats_request(state, script, audio, numbers, style, seconds):
+def used_queries(drafts):
+    """{scene: [IdeaDraft]} planned so far -> Counter of their searches (as short_queries keeps them)."""
+    return Counter(q for ideas in drafts.values() for idea in ideas for shot in idea.shots
+                   for q in short_queries(shot.queries))
+
+
+def beats_request(state, script, audio, numbers, style, seconds, visualization_style=VISUALIZATION_STYLE,
+                  used=None):
     parts = [f"Tema del vídeo: {state.get('topic') or script.title}", f"Título: {script.title}"]
     if state.get("notes"):
         parts.append(f"Notas del autor: {state['notes']}")
@@ -59,13 +77,19 @@ def beats_request(state, script, audio, numbers, style, seconds):
         parts += ["", "# Brief visual (todo plano sale de aquí)"] + brief_lines(state["brief"])
     parts += ["", f"Duración de cada plano: entre {seconds[0]} y {seconds[1]} segundos (una idea más larga "
                   "se ve con varios de sus planos seguidos).",
-              f"Estilo (termina cada prompt con esto): {style}", "",
+              f"Estilo de los planos photo (termina su prompt con esto): {style}",
+              f"Estilo de los planos visualization (termina su prompt con esto): {visualization_style}", "",
               "# Guion completo (número. [segundos · planos que necesita la escena] narración)",
               "Entre todas las ideas de una escena tiene que haber, como mínimo, tantos planos DISTINTOS "
               "como dice la escena: si una escena necesita 4 planos y tiene una sola idea, esa idea lleva "
               "4 planos; si tiene dos ideas, por ejemplo 2 y 2."]
     parts += [f"{s.id}. [{audio[s.id]['duration']:.0f} s · {shots_needed(audio[s.id]['duration'], seconds[1])} "
               f"planos] {s.narration}" for s in script.scenes]
+    if used:
+        parts += ["", f"# Búsquedas ya usadas en las otras escenas (cada una, como mucho en {MAX_QUERY_REPEATS} "
+                      "planos de todo el vídeo: las que ya están en el límite no las repitas, busca otra cosa "
+                      "del universo o de lo que se dice)"]
+        parts += [f"- {q} ({n})" for q, n in used.most_common()]
     parts += ["", f"# Planifica las ideas de las escenas: {', '.join(map(str, numbers))}"]
     return "\n".join(parts)
 
@@ -91,7 +115,7 @@ def with_shot(beat):
     shots = beat.pop("shots")
     shot = shots[min(beat.pop("part", 0), len(shots) - 1)]
     return beat | {"subject": shot["subject"], "prompt": shot["prompt"], "must_show": shot["must_show"],
-                   "queries": short_queries(shot["queries"])}
+                   "queries": short_queries(shot["queries"]), "look": shot.get("look", "photo")}
 
 
 def locate(phrase, words, after):
@@ -153,7 +177,7 @@ def scene_beats(scene, ideas, words, scene_seconds, min_seconds, max_seconds, st
                       "idea": d.idea if d else scene.narration,
                       "must_not_show": d.must_not_show if d else [],
                       "shots": list({s.prompt.strip().lower(): s.model_dump() for s in d.shots}.values()) if d else
-                               [{"subject": scene.narration, "must_show": [], "queries": [],
+                               [{"subject": scene.narration, "must_show": [], "queries": [], "look": "photo",
                                  "prompt": f"Documentary photo illustrating: {scene.narration}. {style}"}]})
     # Too short to be seen: it takes the words of the NEXT beat (it is where something new
     # starts, so its image is the one that matters); the last one joins the one before.
@@ -191,6 +215,46 @@ def manual_beats(scene, marks, words, scene_seconds):
     return finish(beats, narration, scene_seconds)
 
 
+def retime(saved, script, audio, gap, min_seconds, max_seconds, style):
+    """Saved beats (beats.json) put on the CURRENT voice: after --redo voice the words have new
+    times, and after an edit of script.json some words are gone or new. Each beat is found again
+    by its first words (its old word index if they are not there); one that lands on the previous
+    beat's word, or is now shorter than min_seconds, is dropped (the previous one goes on). The plan
+    itself (ideas, searches, prompts) and the ids stay: nothing new to pay for. A scene without any
+    saved beat gets one beat with the whole scene (a new id)."""
+    by_scene = {}
+    for b in saved:
+        by_scene.setdefault(b["scene"], []).append(b)
+    result, next_id = [], max((b["id"] for b in saved), default=0) + 1
+    for scene in script.scenes:
+        narration, words = scene.narration.split(), audio[scene.id]["words"]
+        scene_seconds = audio[scene.id]["duration"] + gap
+        own = sorted(by_scene.get(scene.id) or [], key=lambda b: b["word"])
+        if not own:
+            for b in scene_beats(scene, None, words, scene_seconds, min_seconds, max_seconds, style):
+                result.append({**b, "id": next_id})
+                next_id += 1
+            continue
+        placed = []
+        for i, b in enumerate(own):
+            index = 0 if i == 0 else locate(b.get("text", ""), narration, placed[-1]["word"])
+            if index is None:
+                index = min(b["word"], len(narration) - 1)
+            if placed and index <= placed[-1]["word"]:
+                continue
+            placed.append({**b, "word": index,
+                           "start": 0.0 if index == 0 else round(max(0.0, words[index]["start"] - LEAD), 3)})
+        while len(placed) > 1:                       # too short now (its words were cut): as in scene_beats
+            ends = [b["start"] for b in placed[1:]] + [scene_seconds]
+            short = [i for i, b in enumerate(placed) if ends[i] - b["start"] < min_seconds]
+            if not short:
+                break
+            del placed[short[0] if short[0] > 0 else 1]
+        result += finish(placed, narration, scene_seconds)
+    # ids are kept (not renumbered): montaje/NN and the images already generated stay with their beat
+    return [{k: b[k] for k in FIELDS if k in b} for b in result]
+
+
 def plain(beat):
     """The beat as beats made it. Runs from the old beat_images pause (your image per beat, before
     the search) saved it as kind "manual" with "planned_kind" and "path": that is undone, since
@@ -214,17 +278,23 @@ def make_beats(hub, settings=None):
         stale = brief_file.exists() and beats_file.exists() and brief_file.stat().st_mtime > beats_file.stat().st_mtime
         video_format = state.get("format") or settings.get("format", "long")
         width, height = settings["video"][video_format]["width"], settings["video"][video_format]["height"]
-        if beats_file.exists() and not state.get("manual") and not stale:
-            found = [plain(b) for b in json.loads(beats_file.read_text(encoding="utf-8"))]
-            print(f"  · beats: {len(found)} fragmentos de {beats_file.name} (bórralo para hacerlos de nuevo)")
-            manual.write_beat_prompts(runs_dir(run_id), found, width, height, state.get("brief"))
-            return {"beats": found}
-
         script = Script.model_validate(state["script"])
         audio = state["audio"]
         style = (state.get("brief") or {}).get("style") or options.get("image_style", "")
         seconds = options.get("beat_seconds", {}).get(video_format, [2, 6])
+        min_seconds = options.get("min_beat_seconds", 1.5)                  # one value, or one per format
+        min_seconds = min_seconds.get(video_format, 1.5) if isinstance(min_seconds, dict) else min_seconds
         gap = settings["video"].get("scene_gap", 0.15)
+
+        if beats_file.exists() and not state.get("manual") and not stale:
+            saved = [plain(b) for b in json.loads(beats_file.read_text(encoding="utf-8"))]
+            found = retime(saved, script, audio, gap, min_seconds, seconds[1], style)
+            beats_file.write_text(json.dumps(found, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"  · beats: {len(found)} fragmentos de {beats_file.name}, con los tiempos de la voz actual "
+                  f"(bórralo para hacerlos de nuevo)" + (f"; {len(saved) - len(found)} menos: su texto ya no está"
+                                                         if len(found) < len(saved) else ""))
+            manual.write_beat_prompts(runs_dir(run_id), found, width, height, state.get("brief"))
+            return {"beats": found}
 
         drafts = {}
         ids = [s.id for s in script.scenes if s.id not in marks]          # scenes with your marks: no LLM
@@ -233,7 +303,9 @@ def make_beats(hub, settings=None):
             for group in groups:
                 wanted = [i for i in group if i not in drafts]
                 if wanted:
-                    draft = write.invoke({"text": beats_request(state, script, audio, wanted, style, seconds)})
+                    draft = write.invoke({"text": beats_request(
+                        state, script, audio, wanted, style, seconds,
+                        options.get("visualization_style") or VISUALIZATION_STYLE, used_queries(drafts))})
                     drafts |= {s.scene: s.ideas for s in draft.scenes if s.scene in wanted}
 
         result = []
@@ -243,7 +315,7 @@ def make_beats(hub, settings=None):
                 result += manual_beats(scene, marks[scene.id], words, scene_seconds)
             else:
                 result += scene_beats(scene, drafts.get(scene.id), words, scene_seconds,
-                                      options.get("min_beat_seconds", 1.5), seconds[1], style)
+                                      min_seconds, seconds[1], style)
         for n, beat in enumerate(result, start=1):
             beat["id"] = n
         result = [{k: b[k] for k in FIELDS if k in b} for b in result]

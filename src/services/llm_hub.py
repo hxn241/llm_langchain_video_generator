@@ -69,7 +69,7 @@ from llmkit.console import ask_decisions, describe_error, pending_interrupts, ru
 from llmkit.documents import load_index
 from llmkit.rag import create_conversational_rag, create_rag, rag_tool
 from llmkit.web_search import DEFAULT_DESCRIPTION, create_search_tool, search
-from services import llm
+from services import costs, llm
 
 
 def _data_url(image):
@@ -116,7 +116,7 @@ class LLMHub:
         if node is None:
             return self.model
         if node not in self._node_models:
-            self._node_models[node] = llm.model_for(node)
+            self._node_models[node] = llm.model_for(node, callbacks=[costs.UsageLog(node)])
         return self._node_models[node]
 
     def structured(self, schema, node=None):
@@ -178,7 +178,7 @@ class LLMHub:
         node: use that node's model (config.yaml), e.g. node="write_script".
         """
         model = self.model_for(node)
-        system_message = ("system", system) if system_is_template else SystemMessage(system)
+        system_message = ("system", system) if system_is_template else self._system(system, node)
         prompt = ChatPromptTemplate.from_messages([system_message, ("human", human)])
         # Loads the model as config.yaml says on EVERY call (not now: building a graph must not load models)
         prepare = RunnableLambda(lambda inputs: (self.prepare(node), inputs)[1])
@@ -193,8 +193,15 @@ class LLMHub:
             {"type": "image_url", "image_url": {"url": _data_url(image)}} for image in images]
         self.prepare(node)
         if schema:
-            return self.structured(schema, node).invoke([SystemMessage(system), HumanMessage(content)])
-        return self.model_for(node).invoke([SystemMessage(system), HumanMessage(content)]).text
+            return self.structured(schema, node).invoke([self._system(system, node), HumanMessage(content)])
+        return self.model_for(node).invoke([self._system(system, node), HumanMessage(content)]).text
+
+    def _system(self, text, node):
+        """The system prompt; for an Anthropic model, marked to be cached (llm.caches_prompts): the
+        same instructions sent again within 5 minutes cost 10 %."""
+        if node is not None and self._from_config and llm.caches_prompts(node):
+            return SystemMessage([{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}])
+        return SystemMessage(text)
 
     def extract(self, text, schema, instructions="Extrae los datos del texto.", node=None):
         """Text -> the fields of `schema` (classify, extract data...)."""

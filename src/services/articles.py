@@ -1,6 +1,11 @@
 """Articles from the web: download a page and keep only its text (trafilatura),
-without menus, ads or comments. Used by the research node.
+without menus, ads or comments. Used by the research nodes.
+
+blocked(url, domains): sites that are never a source (shops, listings, social networks, forums:
+research.skip_domains in config.yaml).
 """
+from urllib.parse import urlparse
+
 import requests
 import trafilatura
 
@@ -9,6 +14,19 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
                          "(KHTML, like Gecko) Chrome/131.0 Safari/537.36",
            "Accept-Language": "es-ES,es;q=0.9,en;q=0.6"}
 MIN_CHARS = 600         # less than this is usually a paywall, a cookie wall or a video page
+
+
+def blocked(url, domains):
+    """True if the url's site is in `domains`: "forocoches.com" is that site and its subdomains;
+    a name without a dot, "mercadolibre", is that site in any country (mercadolibre.com.ar, .com.mx...)."""
+    host = urlparse(url).netloc.lower().split(":")[0].removeprefix("www.")
+    names = host.split(".")
+    for domain in (d.lower().strip() for d in domains):
+        if "." in domain and (host == domain or host.endswith("." + domain)):
+            return True
+        if "." not in domain and domain in names:
+            return True
+    return False
 
 
 def fetch_article(url, timeout=15):

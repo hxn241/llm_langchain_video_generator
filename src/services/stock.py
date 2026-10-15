@@ -12,8 +12,11 @@
     download(candidate, width, height, folder)     -> local file, in the smallest size that fills the frame
 
 A candidate is a plain dict, the same for every provider:
-    {"provider", "id", "kind": "video" | "photo", "page_url", "author", "license", "width", "height",
-     "thumb", "duration" (videos, s), "ai_generated", "renditions": [{"url", "width", "height"}, ...]}
+    {"provider", "id", "kind": "video" | "photo", "page_url", "caption", "author", "license", "width",
+     "height", "thumb", "duration" (videos, s), "ai_generated", "renditions": [{"url", "width", "height"}, ...]}
+caption: what its source says it is (NASA's title and description, the Commons file name, Pixabay's
+tags, Pexels' alt text or page name), for the vision judge: a NASA "Dawn spacecraft in a thermal
+vacuum chamber" is that, however much it looks like a physics lab.
 
 Keys in the .env: PEXELS_API_KEY, PIXABAY_API_KEY (NASA and Wikimedia need none). A provider
 without its key is skipped. Rate limits: Pixabay 100 requests/min, Pexels 200/hour.
@@ -78,6 +81,15 @@ def _get(url, params=None, headers=None, retries=2):
     return _request(url, params, headers, retries).json()
 
 
+CAPTION_CHARS = 200       # of a NASA description (its first sentences say what the photo is)
+
+
+def _slug(page_url):
+    """The words of a page's name: '.../video/laser-beam-in-a-lab-6079428/' -> 'laser beam in a lab'."""
+    name = page_url.rstrip("/").split("/")[-1]
+    return re.sub(r"-?\d+$", "", name).replace("-", " ").strip()
+
+
 def _fit(width, height, max_width=None, long_side=None):
     scale = min(1.0, max_width / width) if max_width else min(1.0, long_side / max(width, height))
     return {"width": round(width * scale), "height": round(height * scale)}
@@ -89,7 +101,7 @@ def _pexels(query, kind, orientation, per_page):
     params = {"query": query, "orientation": orientation, "per_page": per_page}
     if kind == "video":
         data = _get("https://api.pexels.com/videos/search", params, headers)
-        return [{"provider": "pexels", "id": v["id"], "kind": "video", "page_url": v["url"],
+        return [{"provider": "pexels", "id": v["id"], "kind": "video", "page_url": v["url"], "caption": _slug(v["url"]),
                  "author": (v.get("user") or {}).get("name", ""), "license": "Pexels License",
                  "width": v["width"], "height": v["height"],
                  "duration": v["duration"], "ai_generated": False, "thumb": v.get("image", ""),
@@ -98,6 +110,7 @@ def _pexels(query, kind, orientation, per_page):
                 for v in data.get("videos", [])]
     data = _get("https://api.pexels.com/v1/search", params, headers)
     return [{"provider": "pexels", "id": p["id"], "kind": "photo", "page_url": p["url"],
+             "caption": p.get("alt") or _slug(p["url"]),
              "author": p.get("photographer", ""), "license": "Pexels License",
              "width": p["width"], "height": p["height"],
              "ai_generated": False, "thumb": p["src"]["medium"],
@@ -115,7 +128,7 @@ def _pixabay(query, kind, orientation, per_page):
         # No orientation filter for videos: the frame crop and the choice take care of it.
         # Only filmed footage: "animation" is mostly cheap motion graphics and green screens.
         data = _get("https://pixabay.com/api/videos/", params | {"video_type": "film"})
-        return [{"provider": "pixabay", "id": h["id"], "kind": "video", "page_url": h["pageURL"],
+        return [{"provider": "pixabay", "id": h["id"], "kind": "video", "page_url": h["pageURL"], "caption": h.get("tags", ""),
                  "author": h.get("user", ""), "license": "Pixabay Content License", "duration": h["duration"],
                  "width": h["videos"]["medium"]["width"] or h["videos"]["small"]["width"],
                  "height": h["videos"]["medium"]["height"] or h["videos"]["small"]["height"],
@@ -127,7 +140,7 @@ def _pixabay(query, kind, orientation, per_page):
     params |= {"image_type": "photo", "orientation": "vertical" if orientation == "portrait" else "horizontal"}
     data = _get("https://pixabay.com/api/", params)
     # largeImageURL is at most 1280 px on its long side (the full size needs extra API approval)
-    return [{"provider": "pixabay", "id": h["id"], "kind": "photo", "page_url": h["pageURL"],
+    return [{"provider": "pixabay", "id": h["id"], "kind": "photo", "page_url": h["pageURL"], "caption": h.get("tags", ""),
              "author": h.get("user", ""), "license": "Pixabay Content License",
              "width": h["imageWidth"], "height": h["imageHeight"],
              "ai_generated": bool(h.get("isAiGenerated")), "thumb": h["webformatURL"],
@@ -151,6 +164,7 @@ def _nasa(query, kind, orientation, per_page):
         largest = max(sized, key=lambda r: r["width"])
         found.append({"provider": "nasa", "id": re.sub(r"[^\w.-]", "_", info["nasa_id"]), "kind": "photo",
                       "page_url": "https://images.nasa.gov/details/" + requests.utils.quote(info["nasa_id"]),
+                      "caption": f"{info.get('title', '')}. {(info.get('description') or '')[:CAPTION_CHARS]}".strip(". "),
                       "author": info.get("photographer") or info.get("secondary_creator") or f"NASA {info.get('center', '')}".strip(),
                       "license": "NASA (dominio público)", "width": largest["width"], "height": largest["height"],
                       "ai_generated": False, "thumb": preview, "renditions": sized})
@@ -200,6 +214,7 @@ def _wikimedia(query, kind, orientation, per_page):
             continue
         found.append({"provider": "wikimedia", "id": page["pageid"], "kind": "photo",
                       "page_url": info.get("descriptionurl", ""), "author": _commons_author(meta),
+                      "caption": re.sub(r"\.\w+$", "", page.get("title", "").removeprefix("File:")).replace("_", " "),
                       "license": licence, "width": info["width"], "height": info["height"], "ai_generated": False,
                       "thumb": info.get("thumburl") or info["url"], "renditions": _commons_renditions(info)})
     return found

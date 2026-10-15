@@ -15,7 +15,7 @@ from langgraph.types import Command
 
 from graph.lengths import duration_text, length_targets
 from graph.nodes.outline import numbered_facts
-from graph.script_files import angles_markdown, load_angles, save_angles
+from graph.script_files import TYPE_LABELS, angles_markdown, load_angles, save_angles
 from graph.state import Angle, AnglesDraft
 from llmkit.approval import ask_approval
 from prompts import load_prompt
@@ -28,6 +28,8 @@ HOW_TO_CHOOSE = ("[y] el recomendado · [e] cambia 'elegido' por otro número o 
 
 def angles_request(state, seconds, feedback=None, previous=None):
     parts = [f"Tema del vídeo: {state['topic']}"]
+    if state.get("video_type"):
+        parts.append(f"Tipo de vídeo: {TYPE_LABELS[state['video_type']]}.")
     if state.get("notes"):
         parts.append(f"Notas del autor: {state['notes']}")
     parts += [f"Duración: {duration_text(seconds)} de narración.", "", "# Hechos disponibles",

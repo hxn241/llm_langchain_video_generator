@@ -1,7 +1,9 @@
 """choose_script ⏸ and manual_script ⏸: the script write_script made, or YOURS.
 
-choose_script: after write_script it asks. [y] goes on with that script; [n] -> manual_script
-(and the run becomes a manual one: state["manual"], --redo reads guion.md).
+choose_script: after write_script and review_script it asks, showing what the review left (notes,
+dubious facts; all in script.md). [y] goes on with that script; [n] with a reason -> write_script
+rewrites it applying your reason (and it is reviewed again); [n] without a reason (Enter) ->
+manual_script (and the run becomes a manual one: state["manual"], --redo reads guion.md).
 
 manual_script: prepares <run>/manual/ (guion.md with the outline's sections and, if write_script
 ran, its scenes to keep, edit or replace; visuales/ for your files; see graph/manual.py) and
@@ -18,28 +20,48 @@ from langgraph.types import Command
 
 from graph import manual
 from graph.lengths import length_targets
-from graph.script_files import save_script
+from graph.script_files import save_script, where
 from graph.state import Outline, Script
 from llmkit.approval import ask_approval
 from services.settings import load_settings, runs_dir
 
+INDENT = "         "
+# A reject without a reason: what llmkit.console sends on Enter, and reject_all (evaluations)
+NO_REASON = {"", "Rechazado por el usuario.", "Rechazado automáticamente (evaluación)."}
+
+
+def review_lines(review):
+    """What review_script left, for the pause (the whole review is in script.md)."""
+    lines = [review.get("summary") or "Sin problemas."]
+    lines += [f"⚠️ hecho {d['fact']} dudoso: \"{d['text'][:90]}\" — {d['why']}" for d in review.get("dubious", [])]
+    lines += [f"· {where(i['scene'])}{' (importante)' if i['serious'] else ''}: {i['problem']}"
+              for i in review.get("issues", [])]
+    return "\n" + "\n".join(INDENT + line for line in lines)
+
 
 def make_choose_script():
-    def choose_script(state, config) -> Command[Literal["unload_llm", "manual_script"]]:
+    def choose_script(state, config) -> Command[Literal["unload_llm", "manual_script", "write_script"]]:
         # Nothing with side effects before ask_approval: on resume this node runs again from the start
         run_folder = runs_dir(state.get("run_id") or config["configurable"]["thread_id"])
         script = Script.model_validate(state["script"])
-        save_script(script, run_folder)                         # script.md up to date to read it
+        review = state.get("script_review")
+        save_script(script, run_folder, review)                 # script.md up to date to read it
         decision = ask_approval(
             "choose_script",
             {"guion": f"{script.title!r} · {len(script.scenes)} escenas · {script.word_count()} palabras",
              "léelo en": str(run_folder / "script.md"),
+             **({"revisión": review_lines(review)} if review else {}),
              **({"avisos": "; ".join(state["script_warnings"])} if state.get("script_warnings") else {}),
-             "responde": "[y] sigo con este guion · [n] escribo el mío (guion.md ya lo trae para editarlo; "
-                         "Enter en el motivo)"},
-            description="¿Usas este guion o escribes el tuyo?", allowed=("approve", "reject"))
+             "responde": "[y] sigo con este guion · [n] y escribe qué cambiar: lo reescribe (p. ej. \"no uses "
+                         "el hecho 5\", \"aplica las notas\") · [n] y Enter: escribo el mío (guion.md ya lo "
+                         "trae para editarlo)"},
+            description="¿Usas este guion, lo reescribe o escribes el tuyo?", allowed=("approve", "reject"))
         if decision["type"] == "reject":
-            return Command(goto="manual_script", update={"manual": True})
+            reason = (decision.get("message") or "").strip()
+            if reason in NO_REASON:
+                return Command(goto="manual_script", update={"manual": True})
+            return Command(goto="write_script", update={"review_feedback": reason, "script_notes": [],
+                                                        "revisions": 0})
         return Command(goto="unload_llm")
 
     return choose_script

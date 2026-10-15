@@ -242,7 +242,7 @@ def wrap(words, font, draw, max_width):
 def metadata_request(state, script):
     angle = state.get("angle") or {}
     parts = [f"Tema: {state.get('topic') or script.title}", f"Título del guion: {script.title}",
-             f"Formato: {'short vertical (menos de 1 minuto)' if state.get('format') == 'short' else 'vídeo largo'}"]
+             f"Formato: {'short vertical (algo más de un minuto)' if state.get('format') == 'short' else 'vídeo largo'}"]
     if angle.get("title"):
         parts.append(f"Enfoque: {angle['title']}")
     if angle.get("question"):
