@@ -1,8 +1,10 @@
 """write_script 🤖: approved outline (+ chosen angle) + facts -> Script.
 
-- Short: the whole script in ONE call. A short is one arc (hook, the "ah, so that's why", a close
-  that comes back to the hook): written in pieces it ends with a generic question.
-- Long: ONE SECTION PER CALL. Ten minutes (~1,600 words) in one go come out shortened, repeated
+- Short, and long up to script.whole_max_words (5-6 min, ~900 words): the whole script in ONE call.
+  A video is one arc (hook, the "ah, so that's why", a close that comes back to the hook): written
+  in pieces, each section repeated the others' ideas (2026-10-15, butterflies: "the bird sees it
+  perfectly" in 4 sections) and a short ended with a generic question. Its rewrites are whole too.
+- Longer: ONE SECTION PER CALL. Ten minutes (~1,600 words) in one go came out shortened, repeated
   or lost: each section is written on its own, seeing the whole outline, its own facts and how
   the previous section ended. It also sees the facts the sections before it already told (not
   to tell them again), and the last one sees how the video started (to close coming back to it).
@@ -66,7 +68,7 @@ def length_line(targets):
 
 
 def script_request(state, outline, targets, facts, video_format, previous=None, feedback=None):
-    """The whole script in one call (shorts)."""
+    """The whole script in one call (shorts, and long videos up to script.whole_max_words)."""
     angle = state.get("angle") or {}
     plan = "\n".join(f"{n}. [{ROLE_LABELS[s.role]}] {s.title} (~{s.words} palabras): {s.goal} Emoción: {s.emotion}."
                      + (f" Hechos: {', '.join(map(str, s.facts))}." if s.facts else "")
@@ -77,6 +79,10 @@ def script_request(state, outline, targets, facts, video_format, previous=None, 
         f"# Escribe el guion completo: las {len(outline.sections)} secciones del esquema, en su orden"]
     if angle.get("hook"):
         parts.append(f"Gancho propuesto (úsalo o mejóralo, sin salirte de los hechos): \"{angle['hook']}\"")
+    if video_format == "long":
+        parts.append("Es un VÍDEO LARGO: aplica también las técnicas de \"Vídeos largos\". Cada sección, con las "
+                     "palabras que le da el esquema. Lo que ya ha dicho una sección no lo repite otra: ni los "
+                     "datos ni las ideas.")
     parts += [length_line(targets), "", "# Hechos", fact_lines(facts, used)]
     if previous:
         sections = sorted({s.section for s in previous})
@@ -84,7 +90,10 @@ def script_request(state, outline, targets, facts, video_format, previous=None, 
             [{"sección": n, "escenas": scene_json([s for s in previous if s.section == n])} for n in sections],
             ensure_ascii=False, indent=1)]
     if feedback:
-        parts += ["", "# Corrige esto (reescribe el guion aplicándolo)", feedback]
+        parts += ["", "# Corrige esto (reescribe el guion aplicándolo)",
+                  "Cambia SOLO lo que piden estas correcciones (y lo justo para que las escenas de alrededor "
+                  "sigan encajando); el resto de escenas, copiadas tal cual de la versión anterior. Cada "
+                  "cambio que no se pide puede romper algo que estaba bien.", feedback]
     return "\n".join(parts)
 
 
@@ -179,7 +188,7 @@ def make_write_script(hub, settings=None):
     write_section = hub.chain(prompt, schema=SectionPlanDraft, node=NODE)
 
     def whole_script(state, outline, targets, facts, video_format, old, feedback, plans):
-        """Shorts: the whole script in one call -> ([scenes per section], warnings). plans[0]: its plan."""
+        """The whole script in one call -> ([scenes per section], warnings). plans[0]: its plan."""
         def write(previous, feedback):
             draft = write_whole.invoke({"text": script_request(state, outline, targets, facts, video_format,
                                                                previous, feedback)})
@@ -246,18 +255,21 @@ def make_write_script(hub, settings=None):
         old = Script.model_validate(state["script"]) if state.get("script") and (reason or notes) else None
         requests = feedback_text(reason, notes, review=state.get("script_review")) if old else ""
         plans = {}
+        # in one call: a short, or a long video short enough (config.yaml: script.whole_max_words)
+        whole = (video_format == "short"
+                 or targets["words"] <= (settings.get("script") or {}).get("whole_max_words", 1200))
 
-        if video_format == "short":
+        if whole:
             sections, warnings = whole_script(state, outline, targets, facts, video_format, old,
                                               requests or None, plans)
         else:
             sections, warnings = by_sections(state, outline, targets, facts, video_format, old, reason, notes, plans)
         script = Script.from_sections(outline.title, sections, [s["url"] for s in state.get("sources", [])])
-        if video_format != "short":                     # a short was already checked as a whole
+        if not whole:                                   # a whole script was already checked as a whole
             warnings += length_problems(script.word_count(), len(script.scenes), targets, "El vídeo")
         # A long video's sections not written again keep their plan from before
         old_plans = state.get("script_plan") or ""
-        plan = (plans.get(0, "") if video_format == "short" else
+        plan = (plans.get(0, "") if whole else
                 "\n\n".join(f"Sección {n}: {plans[n]}" if n in plans else
                             next((p for p in old_plans.split("\n\n") if p.startswith(f"Sección {n}:")), "")
                             for n in range(1, len(outline.sections) + 1)).strip())

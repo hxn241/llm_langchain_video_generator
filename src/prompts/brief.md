@@ -29,12 +29,14 @@ Los planos saldrán de bancos de vídeo y fotos de stock (Pexels, Pixabay), de f
 
 - Cada expresión figurada del guion ("la burbuja inmobiliaria está a punto de estallar", "una carrera contra el reloj", "el talón de Aquiles del sistema"), copiada tal cual.
 - En `show`, cómo se enseña con cosas reales del universo, nunca la imagen literal: "la burbuja inmobiliaria está a punto de estallar" -> "grúas paradas sobre bloques de pisos a medio construir", no una pompa de jabón.
+- Una COMPARACIÓN que el narrador hace a propósito para explicar algo ("el corazón funciona como la bomba de un pozo", "imagina una autopista donde cada carril...") no es una metáfora que esconder: es lo que el espectador tiene que ver. No va aquí; lo comparado (la bomba de un pozo, la autopista) entra en el `universe`.
 
 ## style
 
-- En inglés, 10-25 palabras: tipo de foto, luz, paleta y encuadre. Coherente con el tono del tema:
-  - Un tema social o político: "documentary photograph, natural daylight, muted warm tones, eye-level framing, 35mm lens".
-  - Un tema técnico o científico: "cinematic still, cool neutral lighting, high contrast, shallow depth of field, 50mm lens".
-  - Un tema deportivo o de un evento: "sports photojournalism, dynamic natural light, vivid colours, telephoto lens".
+- En inglés, 8-15 palabras: SOLO el acabado común a todas las fotos del vídeo: el tipo de imagen y el tratamiento del color. Coherente con el tono del tema:
+  - Un tema social o político: "documentary photograph, natural colour grading, muted tones".
+  - Un tema técnico o científico: "cinematic still, natural colour grading, crisp detail, high dynamic range".
+  - Un tema deportivo o de un evento: "sports photojournalism, vivid natural colours".
+- NUNCA un color que lo tiña todo ("violet accents", "blue tint", "teal and orange"), ni luz, objetivo, profundidad de campo o encuadre: eso lo elige cada plano según lo que enseña (un objeto sobre fondo negro de estudio, un paisaje a pleno sol y una foto antigua no se iluminan igual). Si todo lleva la misma luz y el mismo color, todas las imágenes parecen la misma.
 - SOLO cómo se fotografía, nunca QUÉ se ve: ni objetos, ni lugares, ni fondos ("stadium", "office background", "city street" no van aquí). Se añade al final de todos los prompts de FOTO, así que un objeto aquí saldría en todas las imágenes.
 - Siempre realista: "documentary photograph", "photojournalism" o "cinematic still", nunca ilustración ni 3D. (Las visualizaciones científicas llevan su propio estilo fijo: no lo pongas aquí.)

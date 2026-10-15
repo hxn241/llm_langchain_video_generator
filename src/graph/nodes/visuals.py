@@ -14,6 +14,8 @@ For each beat (graph/nodes/beats.py: what must be seen, from which word):
    b. The vision model (llm.visuals) sees them in ONE numbered grid, cropped like the frame,
       with the words being said, and picks one (prompts/visual_choice.md). Below
       visuals.min_score, none is used.
+   Beats marked "generate" (beats decides: an object on a studio background, a period scene...)
+   are not searched when visuals.direct_generate is on: they go straight to step 3.
 3. Beats without a good candidate: their prompt is generated (visuals.generator): with a paid
    model through OpenRouter (services/image_api.py) or, locally, with Z-Image Turbo in ComfyUI
    (the LLM is unloaded first). If OpenRouter fails, the rest go to ComfyUI. Same prompt and
@@ -285,6 +287,15 @@ def make_visuals(hub, settings=None):
     def visuals(state, config):
         options = settings["visuals"]
         run_id = state.get("run_id") or config["configurable"]["thread_id"]
+        if state.get("keep_visuals") and state.get("visuals"):
+            # run_pipeline --redo voice --keep-visuals: the same images on the new voice. beats kept
+            # their ids (retime), so each chosen visual still goes with its beat: nothing searched,
+            # judged or generated; montaje/ is written again with the new times
+            chosen = {int(k): v for k, v in state["visuals"].items()}
+            extras = {int(k): v for k, v in (state.get("visual_extras") or {}).items()}
+            folder = montage.write(runs_dir(run_id), [plain(b) for b in state["beats"]], chosen, extras)
+            print(f"  · visuals: las mismas imágenes con los tiempos nuevos, sin buscar ni generar ({folder})")
+            return {"visuals": chosen, "visual_extras": extras, "keep_visuals": False}
         video_format = state.get("format") or settings.get("format", "long")
         width, height = settings["video"][video_format]["width"], settings["video"][video_format]["height"]
         orientation = "portrait" if height > width else "landscape"
@@ -297,8 +308,11 @@ def make_visuals(hub, settings=None):
         # 1. candidates (searches cached in the run: a redo does not spend the providers' rate limits again)
         cache_file = folder / "searches.json"
         cache = json.loads(cache_file.read_text(encoding="utf-8")) if cache_file.exists() else {}
+        # beats marks what no bank will have (an object on a studio background, a period scene, a
+        # visualization): with visuals.direct_generate those go straight to step 3, not searched
+        direct = options.get("direct_generate", True)
         try:
-            candidates = {b["id"]: [] if b["kind"] == "manual" else             # yours: not searched
+            candidates = {b["id"]: [] if b["kind"] == "manual" or (direct and b.get("generate")) else
                           gather(b, orientation, options, folder / "thumbs", cache) for b in beats}
         finally:
             cache_file.write_text(json.dumps({k: v for k, v in cache.items() if v}, ensure_ascii=False),

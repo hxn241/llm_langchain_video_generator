@@ -13,5 +13,6 @@ data/
 .state/
 *.part
 
-# Referencia de la voz clonada: solo en local
-assets/voice_reference.wav
+# Referencia de la voz clonada (tu voz y sus copias): solo en local
+assets/voice_reference*.wav
+assets/mi_voz.*

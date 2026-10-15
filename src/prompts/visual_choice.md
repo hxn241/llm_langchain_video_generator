@@ -25,7 +25,8 @@ Si la petición trae las FICHAS de las imágenes (lo que dice su fuente: el tít
 ## Puntúa
 
 - Juzga por lo que se DICE en el fragmento, dentro de la idea y del contexto del vídeo. "Qué debería verse" es una propuesta del editor; lo que manda es la narración: lo que nombra en ese momento tiene que estar. Una imagen que solo es del tema general del vídeo (un laboratorio cualquiera en un vídeo de física) pero no enseña lo que se está diciendo no pasa de 5.
-- Una imagen que ilustra una palabra al pie de la letra fuera de contexto (una pompa de jabón para "la burbuja inmobiliaria", rayos para "una tormenta política") no pasa de 2.
+- Una imagen que ilustra una palabra al pie de la letra fuera de contexto (una pompa de jabón para "la burbuja inmobiliaria", rayos para "una tormenta política") no pasa de 2. Tampoco una palabra con otro sentido (una manzana para "el núcleo del procesador", un parque para "el banco").
+- Pero si el narrador hace una comparación a propósito para explicar algo ("funciona como la bomba de un pozo", "imagina una autopista..."), lo comparado SÍ es lo que se dice en ese momento: puntúalo como cualquier otra cosa nombrada.
 - 9-10: muestra exactamente lo que se dice, y quedaría bien en un documental.
 - 7-8: muestra bien lo que se dice, aunque no sea exacto (un plano genérico que encaja con la frase: una calle española para "en España", alguien pagando para "el alquiler").
 - 4-6: solo es del mismo tema, o encaja pero con un fallo (país dudoso, tono publicitario, gente sonriendo en un tema serio).

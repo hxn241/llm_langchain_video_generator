@@ -159,9 +159,10 @@ class SectionPlanDraft(BaseModel):
 
 
 class ScriptDraft(BaseModel):
-    """A whole script in one call (shorts): the plan first (it is written before the scenes), then one
-    entry per section of the outline."""
-    plan: str = Field(description=PLAN_HELP + " (con el bucle: cómo enlaza la última frase con la primera)")
+    """A whole script in one call (shorts, and long videos up to script.whole_max_words): the plan
+    first (it is written before the scenes), then one entry per section of the outline."""
+    plan: str = Field(description=PLAN_HELP + " (en un short, con el bucle: cómo enlaza la última frase con la "
+                                              "primera; en un vídeo largo, una línea por sección con su puente)")
     sections: list[SectionDraft] = Field(min_length=1, max_length=12,
                                          description="Las secciones del esquema, en su orden, cada una con sus escenas")
 
@@ -271,6 +272,12 @@ class ShotDraft(BaseModel):
                                            "más concreta a la más genérica: 1-3 sustantivos de lo que se VE")
     prompt: str = Field(description="Prompt en INGLÉS para generar la imagen si no se encuentra una buena: "
                                     "40-70 palabras, sujeto, acción, lugar, luz, encuadre, terminado con el estilo")
+    generate: bool = Field(default=False,
+                           description="true = se genera directamente, sin buscar en los bancos: un objeto "
+                                       "protagonista sobre fondo de estudio, una escena de época, una "
+                                       "visualización o algo técnico tan concreto que ningún banco lo tendrá. "
+                                       "false = se busca primero (el mundo real corriente: lugares, gente, "
+                                       "industria, naturaleza, el espacio)")
 
 
 class IdeaDraft(BaseModel):
@@ -313,9 +320,44 @@ class Beat(TypedDict, total=False):
     must_not_show: list[str]  # the idea's; the brief's `avoid` counts for every beat
     subject: str              # this shot of the idea (a split idea: another shot per part)
     look: str                 # ShotLook: photo | visualization (old beats.json: photo)
+    generate: bool            # straight to the image generator, not searched (old beats.json: false)
     queries: list[str]        # this shot's stock searches, most concrete first (old beats.json: the idea's;
                               # older ones: "query", one string)
     prompt: str
+
+
+# ------------------------------------------------------------------ on-screen labels (rótulos)
+LabelKind = Literal["fuente", "persona", "termino"]
+
+
+class LabelDraft(BaseModel):
+    scene: int = Field(description="Número de la escena donde aparece")
+    start: str = Field(description="Las primeras 3-5 palabras desde donde aparece, copiadas EXACTAMENTE de la "
+                                   "narración de esa escena (donde se nombra a la persona, el estudio o el término)")
+    kind: LabelKind = Field(description="fuente = el estudio, la revista o la institución de donde sale lo que se "
+                                        "cuenta; persona = alguien con nombre que habla o hizo algo; termino = un "
+                                        "concepto clave del vídeo, la primera vez que se explica")
+    title: str = Field(max_length=48, description="La línea principal: el nombre de la persona, la institución o "
+                                                  "la revista, o el término (en mayúsculas no: se pone solo)")
+    subtitle: str = Field(default="", max_length=70,
+                          description="Segunda línea (fuente y persona): qué es o quién es ('Ecólogo visual · "
+                                      "Universidad de Exeter', 'Estudio publicado en Nature · 2026'). Vacía en "
+                                      "un término")
+
+
+class LabelsDraft(BaseModel):
+    labels: list[LabelDraft] = Field(default_factory=list, max_length=16,
+                                     description="Los rótulos del vídeo, en el orden en que aparecen")
+
+
+class Label(TypedDict, total=False):
+    scene: int
+    word: int                 # index of the word it appears on, in the scene's narration
+    start: float              # seconds from the start of the scene's audio
+    text: str                 # the words it was placed on (to find it again with a new voice)
+    kind: str                 # LabelKind
+    title: str
+    subtitle: str
 
 
 class VisualChoice(BaseModel):
@@ -388,9 +430,11 @@ class VideoState(TypedDict, total=False):
     script_notes: list[dict]              # review_script's serious issues: write_script fixes them
     review_feedback: str                  # your reason at the choose_script pause: write_script rewrites with it
     revisions: int                        # review_script's automatic rewrites (review.max_revisions)
+    keep_visuals: bool                    # run_pipeline --keep-visuals: visuals reuses its choice (new voice only)
     audio: dict[int, SceneAudio]          # scene id -> audio (+ word times, from align)
     brief: dict                           # BriefDraft.model_dump(): the visual universe of the video
     beats: list[Beat]                     # what is shown and from which word
+    labels: list[Label]                   # on-screen labels (rótulos): source, person, key term
     visuals: dict[int, SceneVisual]       # beat id -> visual
     visual_extras: dict[int, list[SceneVisual]]   # beat id -> more visuals that share its time (long
                                           # videos: no photo longer than visuals.photo_max_seconds)

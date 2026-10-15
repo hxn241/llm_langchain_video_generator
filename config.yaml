@@ -1,5 +1,5 @@
 # Configuración del pipeline. Las claves (API keys) van en el .env, nunca aquí.
-format: long                  # long (~5 min) | short (~45 s)
+format: long                  # long (5-6 min) | short (~75 s)
 
 # El canal: entra en todos los prompts (src/prompts/), así que otro canal es otro bloque como este.
 channel:
@@ -55,6 +55,8 @@ llm:
   # los hechos, tema sin responder, jerga, gancho y cierre; hechos dudosos de los artículos). Una
   # llamada por revisión; lo grave se reescribe solo (review.max_revisions).
   review_script: {temperature: 0.2, fallback: cloud}
+  # Rótulos en pantalla (fuente, persona, término clave): una llamada por vídeo con el guion y los hechos
+  labels:       {temperature: 0.2, fallback: cloud}
   # Plan visual (brief: el universo visual del vídeo; beats: las ideas y sus planos). Es donde más
   # se nota un modelo fuerte (traducir metáforas a planos filmables) y son 2-5 llamadas por vídeo.
   # Con un modelo de OpenRouter (OPENROUTER_API_KEY en el .env): structured_output: json_schema
@@ -102,7 +104,12 @@ voice:
     design_model: Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign
     language: Spanish
     seed: 1234                                      # mismo texto -> mismo audio
-    batch_size: 4
+    # De una en una: en lotes, las frases cortas se rellenan para igualar a las largas (antes 4)
+    batch_size: 1
+    # Azar al generar. Sin esto, el modelo usa temperature 0.9 y top_k 50 (voz y detalle del sonido):
+    # la voz "patinaba", cambiaba de tono a mitad de frase y volvía (mariposas, 2026-10-15).
+    # Más bajo = más estable y menos expresiva.
+    generation: {temperature: 0.7, top_k: 30, subtalker_temperature: 0.7, subtalker_top_k: 30}
   edge: {voice: es-ES-AlvaroNeural, rate: "+0%"}
 
 workers:
@@ -146,11 +153,15 @@ visuals:
   photo_max_seconds: {long: 7.5}
   # Uno más corto se une al anterior (dentro de su escena: una escena entera más corta se queda así).
   min_beat_seconds: {short: 1.5, long: 4}
+  # Planos que beats marca "generate" (objeto protagonista sobre fondo de estudio, escena de época,
+  # visualización, algo técnico que ningún banco tiene): se generan sin buscar. false = buscar siempre.
+  direct_generate: true
   max_candidates: 16          # candidatos por fragmento (sumando fuentes y búsquedas)
   embed_model: google/siglip2-base-patch16-224  # primer filtro: parecido texto-imagen
   top_k: 8                    # los mejores según SigLIP 2 que ve el modelo con visión
-  min_score: 5                # 0-10 del modelo con visión para usar un candidato. Bajo a propósito:
-                              # un plano real "del tema" queda mejor que una imagen generada
+  min_score: 7                # 0-10 del modelo con visión para usar un candidato. 5 hasta 2026-10-15
+                              # ("un plano real del tema queda mejor que uno generado"), pero 4-6 es "solo
+                              # del mismo tema": colaba imágenes que no enseñaban lo que se dice
   # Generación de lo que no pasa el juez:
   #   openrouter: de pago (OPENROUTER_API_KEY con saldo), generate_model. Nano Banana 2: ~0,10 $
   #               por imagen a 2K, menos a 1K. Si falla (sin saldo, error), el resto se hace con comfy.
@@ -160,16 +171,20 @@ visuals:
   # 2026-10-14: Nano Banana para todas (~0,067 $ por imagen a 1K, ~2-3 $ por vídeo largo: lo que
   # más gasta del vídeo; el coste real de cada una, en <run>/costes.md, visuals_images). ComfyUI de
   # respaldo: arráncalo antes del run, por si Nano Banana falla o rechaza una imagen.
-  generator: openrouter
+  generator: comfy            # 2026-10-15: Z-Image en local (gratis); al autor le valen sus imágenes.
+                              # openrouter = Nano Banana (~2-2,7 $ por vídeo largo)
   generate_model: google/gemini-3.1-flash-image   # Nano Banana 2 (el 2.1 daba 429: cupo de Google agotado)
   generate_resolution: 1K     # 1K | 2K | 4K (no todos los modelos lo admiten: quítalo si da error).
                               # 1K: el vídeo es 1080p como mucho, más no se ve y cuesta más
   # Estilo común a las imágenes generadas (va al final de cada prompt, en inglés). Solo si el
   # brief no da uno (brief.json: style)
-  image_style: "documentary photograph, natural light, realistic, candid, 35mm lens, shallow depth of field"
+  # Solo el acabado: la luz, el color y el encuadre los elige cada plano (con uno fijo, todas las
+  # imágenes parecían la misma: reloj nuclear, 2026-10-15)
+  image_style: "documentary photograph, realistic, natural colour grading"
   # Estilo de los planos de visualización científica (lo que no se puede fotografiar: un átomo, una
   # molécula, un campo magnético; beats.json: look). Va al final de su prompt en vez del de foto.
-  visualization_style: "photorealistic scientific visualization as in a science documentary, dark background, soft volumetric glow, cinematic lighting, no text, no labels, no diagrams"
+  # Sin fondo ni brillo fijos (con "dark background, soft volumetric glow" eran todas iguales).
+  visualization_style: "photorealistic scientific visualization as in a science documentary, cinematic lighting, no text, no labels, no diagrams"
   # Fuente stock: bancos en orden de preferencia; uno sin clave en el .env se salta.
   # Límites: Pixabay 100 búsquedas/min, Pexels 200/hora (hasta 6 búsquedas por fragmento: 3
   # consultas x vídeo/foto; las repetidas salen de la caché). Para un vídeo largo, Pexels sube
@@ -199,7 +214,8 @@ video:
   # 2026-10-12: ~75 s (~187 palabras) para explicar; probar 4-6 y comparar en YouTube Studio la
   # duración media vista y el % que lo ve en vez de deslizar con los de 45 s.
   short:  {width: 1080, height: 1920, target_seconds: 75, seconds: [65, 85], scenes: [10, 16], sections: [3, 4]}
-  long:   {width: 1920, height: 1080, target_seconds: 300, seconds: [270, 330], scenes: [24, 38], sections: [4, 6]}
+  # long: 300 s [270, 330] hasta 2026-10-15; 5-6 min para explicar con calma (analogía desarrollada, una historia)
+  long:   {width: 1920, height: 1080, target_seconds: 330, seconds: [300, 360], scenes: [24, 40], sections: [4, 5]}
   words_per_second: 2.5       # ritmo de narración en español (~150 palabras/min): fija la longitud del guion
   fps: 30
   loudness_lufs: -14
@@ -215,6 +231,10 @@ video:
     long:  {words: 14, seconds: 5, highlight: false}
   # Fundido cruzado entre ESCENAS (segundos; 0 = corte seco). Dentro de una escena siempre corte seco.
   transition: {short: 0.3, long: 0.4}
+  # Rótulos (nodo labels -> <run>/rotulos.json, editable; graph/onscreen.py los dibuja arriba a la
+  # izquierda): la fuente de un estudio, el nombre y cargo de quien se cita, el término clave en rojo.
+  # seconds: cuánto se ve cada tipo. enabled: false = sin rótulos.
+  labels: {enabled: true, seconds: {fuente: 4.5, persona: 4.5, termino: 3.0}}
   # Música: la tuya, montaje/musica.mp3 en la pausa review_visuals (sin ella, sin música). Volumen FIJO
   # (sin ducking): db por debajo de la voz (-17 más alta, -23 más baja); eq_db: hueco en 1-4 kHz para la voz.
   music: {db: -20, eq_db: -4, fade_in: 2, fade_out: 3}
@@ -295,10 +315,20 @@ topics:
   reserve_days: 30            # un tema propuesto y no elegido se sigue ofreciendo estos días
   out_dir: data/temas         # aquí van los .md de cada búsqueda y registro.json (todos los temas y su estado)
 
+script:
+  # Un guion de hasta estas palabras se escribe (y se reescribe) ENTERO en una llamada: los shorts y
+  # los largos de 5-6 min (~900). Más largo, una llamada por sección. Por secciones, cada una repetía
+  # las ideas de las otras (mariposas, 2026-10-15). Las reescrituras por secciones rompían el enlace.
+  whole_max_words: 1200
+
 review:
   # Veces seguidas que review_script manda reescribir el guion por algo grave antes de tu pausa (cada
   # una: una llamada al guionista y otra al revisor). Lo que quede, lo ves en la pausa y en script.md.
-  max_revisions: 1
+  # 1 hasta 2026-10-15: lo grave que encontraba la segunda revisión llegaba siempre a la pausa.
+  max_revisions: 2
+  # Todas las revisiones de todos los vídeos, una por línea: para ver qué errores se repiten y
+  # corregirlos en el prompt del guionista (no vídeo a vídeo).
+  log: data/revisiones.jsonl
 
 youtube:
   # Fuera del pipeline: scripts/prepare_upload.py (run -> carpeta lista) y scripts/upload_youtube.py

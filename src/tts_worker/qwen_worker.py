@@ -11,7 +11,9 @@ job.json:
      "language": "Spanish",
      "items": [{"text": "...", "out": "path.wav", "instruct": "..."}],   # instruct: only "design"
      "ref_audio": "voice_reference.wav", "ref_text": "...",              # only "clone"
-     "seed": 1234, "batch_size": 4}
+     "seed": 1234, "batch_size": 4,
+     "generation": {"temperature": 0.7, "top_k": 30, ...}}               # only "clone": sampling options
+                                                                         # (model default: 0.9 / 50)
 
 Prints one JSON line at the end: {"ok": true, "files": [...], "seconds": ...}
 """
@@ -52,7 +54,8 @@ def main(job_path):
             wavs, sr = model.generate_voice_design(text=texts, language=languages,
                                                    instruct=[i["instruct"] for i in batch])
         elif job["task"] == "clone":
-            wavs, sr = model.generate_voice_clone(text=texts, language=languages, voice_clone_prompt=prompt)
+            wavs, sr = model.generate_voice_clone(text=texts, language=languages, voice_clone_prompt=prompt,
+                                                  **job.get("generation", {}))
         else:
             raise ValueError(f"Unknown task: {job['task']!r}")
         for item, wav in zip(batch, wavs):

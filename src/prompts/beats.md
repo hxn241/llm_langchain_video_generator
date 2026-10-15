@@ -17,7 +17,9 @@ Cada vídeo es de un tema distinto ({{temas}}). Lo que se ve sale de ESTE guion 
 - Los objetos, lugares y personas del "universo visual" son tu material: casi todos los planos deben salir de ahí. Si la narración nombra algo filmable que no está en el universo, enséñalo igualmente: manda lo que se dice.
 - Nada de lo que "nunca debe verse" puede aparecer en búsquedas, sujetos ni prompts.
 - Las metáforas se enseñan como dice el brief, nunca al pie de la letra: si el guion dice "la burbuja está a punto de estallar", no hay pompas de jabón.
-- Una expresión figurada que no esté en el brief: tradúcela tú a cosas reales del universo visual.
+- Una expresión figurada que no esté en el brief: tradúcela tú a cosas reales del universo visual. Se enseña lo que SIGNIFICA: "los chips se ahogan en su propio calor" -> un procesador al rojo o su imagen térmica, nunca alguien ahogándose.
+- Una COMPARACIÓN que el narrador hace a propósito para explicar ("funciona como la bomba de un pozo", "imagina una autopista donde...") es lo contrario: SÍ se enseña lo comparado, mientras se nombra (la bomba, la autopista), y luego se vuelve a la cosa real. Es lo que hace que la explicación se entienda.
+- `subject` es siempre la cosa REAL que se enseña ("procesador sobrecalentado"), nunca la figura ("asfixia").
 
 ## 3. Clasifica cada idea (`kind`)
 
@@ -32,7 +34,8 @@ Cada vídeo es de un tema distinto ({{temas}}). Lo que se ve sale de ESTE guion 
 - `photo` (casi siempre): algo que una cámara puede grabar.
 - `visualization`: lo que la narración nombra es invisible por su escala o su naturaleza (un átomo y sus electrones, un núcleo diminuto dentro de su átomo, una molécula, el interior de una célula, un campo magnético, la luz de una longitud de onda que no vemos, un agujero negro). Se enseña ESO, con una visualización científica fotorrealista como las de los documentales, no a alguien en un laboratorio pensando en ello. Ejemplos: "el virus se engancha a la célula" -> visualización de un virus acoplándose a la membrana de una célula; "la proteína se pliega sobre sí misma" -> visualización de una cadena de proteína retorciéndose hasta formar un ovillo.
 - Una escala o una comparación ("mil veces más pequeño que un pelo") también es una visualización si lo comparado es invisible: el virus como una esfera diminuta junto a la superficie gigantesca de un pelo.
-- Sin abusar: si lo que se nombra se puede fotografiar (el aparato, el laboratorio de verdad, el lugar), es `photo`.
+- Sin abusar: si lo que se nombra se puede fotografiar (el aparato, el laboratorio de verdad, el lugar), es `photo`. Como mucho 1 de cada 4 planos del vídeo es una visualización, aunque el tema sea de lo muy pequeño: el resto enseña lo que sí se ve (el aparato que lo mide, el material, el lugar, la historia, la consecuencia, la escala con objetos cotidianos). Muchas visualizaciones seguidas parecen la misma imagen.
+- Cada visualización, distinta de las demás: otro objeto, otra escala, otro color y otro fondo. No repitas "núcleo brillante sobre fondo oscuro" con otras palabras.
 
 ## 4. Qué debe verse y qué no
 
@@ -53,6 +56,7 @@ Cada PLANO lleva lo suyo (sección 6): si una idea tiene tres planos (una grada 
 - Nunca conceptos ("housing crisis", "economic uncertainty", "innovation", "political tension"), cifras, fechas ni meses, nombres de leyes ni de informes, ni frases. Nunca una negación ("no water", "without people"): se descarta.
 - Marcas y nombres propios solo en planos `entity` y solo si es lo que se ve (Wikimedia): en stock, "Google satellite" no existe; busca lo que se ve ("satellite orbit").
 - Buscamos METRAJE REAL, nunca gráficos: prohibidas palabras como chart, graph, infographic, diagram, icon, arrow, pie, percent, symbol, question mark, concept, illustration, 3d, cartoon (esas búsquedas se descartan). En un plano `visualization` sí valen "3d" y "animation", porque los bancos tienen animaciones científicas reales: "molecule 3d", "virus animation", "magnetic field", "cell membrane".
+- Una palabra con varios sentidos va siempre con su contexto, nunca sola: "CPU core", no "core"; "brake disc", no "brake"; "cell biology microscope", no "cell"; "power grid", no "grid".
 - No añadas el país a cada búsqueda: los bancos tienen poco material de cada país y "Spain" hunde los resultados. Solo cuando el lugar ES lo que se ve ("Madrid skyline", "Barcelona beach").
 - `entity`: primero el nombre propio tal cual (Wikimedia tiene fotos reales de personas públicas, instituciones, edificios, productos y lugares con nombre: "Pedro Sánchez", "Santiago Bernabéu stadium", "European Parliament"); después, su contexto filmable ("press conference podium", "parliament chamber").
 - `data`: la consecuencia visible de la cifra, o algo que dé su escala ("for rent sign", "crowded train", "empty supermarket shelf"; "una bacteria se divide cada 20 minutos" -> "petri dish colonies"; "la luz del Sol tarda ocho minutos" -> "sunrise horizon"). Nunca alguien mirando papeles o una pantalla.
@@ -65,9 +69,21 @@ Cada PLANO lleva lo suyo (sección 6): si una idea tiene tres planos (una grada 
 - Planos DISTINTOS de verdad: otra cosa, otro lugar, otro encuadre (detalle, plano medio, general), otro momento. Nunca el mismo plano con otras palabras ("estadio lleno de noche" y "vista general de un estadio lleno de noche" son el mismo). Y en todo el vídeo, no repitas el mismo sujeto en ideas distintas salvo que la narración vuelva a él: varía.
 - EN EL ORDEN DE LA NARRACIÓN: si la idea dura más de un plano, sus planos se ven uno tras otro mientras se narra; el primero enseña lo que se dice primero y el siguiente, lo que se dice después. Ejemplo: "¿Podrán las desaladoras salvar a las ciudades de la sequía que vacía los embalses?" -> 1) desaladora junto al mar, 2) embalse seco con la tierra agrietada.
 - NADA DE RELLENO HUMANO: como mucho 1 de cada 5 planos del vídeo es una persona en un laboratorio o un despacho mirando, leyendo, anotando o ajustando algo. Es el plano que sale cuando no se sabe qué enseñar, y repetido hace el vídeo monótono. Enseña la cosa de la que se habla (el aparato, el material, el lugar, el fenómeno, o su visualización), su consecuencia o su escala.
-- Cada plano lleva: `look` (sección 3b), `subject`, `must_show` (sección 4), `queries` (sección 5) y `prompt`, todos de ESE plano.
+- VARÍA EL TIPO DE PLANO, como un documental, y nunca más de 2 seguidos del mismo tipo:
+  - objeto protagonista: la cosa de la que se habla, sola, sobre fondo negro o liso de estudio, con luz de estudio (un material, una pieza, un componente, un producto, una muestra);
+  - detalle macro: su textura o su mecanismo de muy cerca;
+  - plano general: el lugar entero (la fábrica, el yacimiento, la ciudad, el paisaje), mejor si es aéreo;
+  - acción: algo pasando (se funde, se corta, despega, se monta), con movimiento;
+  - de época: lo que pasó hace décadas se ve con aspecto de su época (foto de archivo en blanco y negro o en color antiguo, con aparatos, ropa y coches de entonces), nunca con un laboratorio moderno;
+  - lo comparado: cuando el narrador explica con una comparación;
+  - visualización (sección 3b), con su límite.
+- Cada plano lleva: `look` (sección 3b), `generate`, `subject`, `must_show` (sección 4), `queries` (sección 5) y `prompt`, todos de ESE plano.
+- `generate` decide de dónde sale el plano. El banco de stock solo tiene lo corriente: con lo demás devuelve algo "parecido" que no es lo que se dice.
+  - `false` (se busca primero): el mundo real corriente, que un banco tiene seguro y a menudo en vídeo: lugares, ciudades, gente haciendo algo, fábricas, vehículos, naturaleza, el espacio y las misiones, objetos de uso diario.
+  - `true` (se genera directamente): el objeto protagonista sobre fondo de estudio, una escena de época, una visualización, lo comparado cuando es una escena inventada ("una autopista donde cada carril..."), y cualquier cosa técnica tan concreta que ningún banco la tendrá (una pieza de un aparato de laboratorio concreto, un material raro, un instrumento de un experimento).
+  - Aun así, rellena `queries` en todos los planos: si se apaga la generación directa, se buscan.
 - `subject` (español): lo que debe verse, concreto y situado en el contexto del vídeo. Para `entity`, el nombre propio y qué de él ("fachada de la sede del INE en Madrid", "el estadio Santiago Bernabéu lleno en noche de partido").
-- `prompt` (inglés, 40-70 palabras): la imagen que se generaría si no se encuentra una buena. Sujeto, acción, lugar, luz, encuadre, y termina con el estilo de su tipo (el de `photo` o el de `visualization`), copiado una sola vez (no repitas antes sus palabras). Reglas:
+- `prompt` (inglés, 40-70 palabras): la imagen que se generaría si no se encuentra una buena. Sujeto, acción, lugar, y la luz, el color y el encuadre de SU tipo de plano (luz de estudio sobre negro para un objeto protagonista, luz del día para un plano general, tono antiguo para uno de época...), y termina con el estilo de su `look` (el de `photo` o el de `visualization`), copiado una sola vez (no repitas antes sus palabras). Reglas:
   - La situación concreta de ese momento, en el lugar del vídeo (si es España: calles, gente y comercios españoles, euros, nunca dólares).
   - Las cifras se muestran con su consecuencia humana o un objeto real, NUNCA con números, gráficos, pantallas con datos, calendarios, etiquetas, contadores, temporizadores ni rótulos dentro de la imagen ("un escaparate con un rótulo que dice 1.200 €/mes" no; "una pareja joven mirando un escaparate de inmobiliaria" sí). El generador escribe mal los textos y una cifra inventada en pantalla engaña.
   - Una sola escena coherente y real, nunca un collage de conceptos (nada de "un piso en venta con billetes y una gráfica flotando alrededor"). Nunca una ausencia ("sin gente", "sin cables"): enseña lo que hay.

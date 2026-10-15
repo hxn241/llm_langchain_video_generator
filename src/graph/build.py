@@ -14,7 +14,7 @@
                        [n] + your reason -> write_script rewrites it (and review_script again)
                        [n] + Enter: yours -> manual_script ⏸ (guion.md + your visuals in <run>/manual/) -> unload_llm
                        (--manual: straight from the outline to manual_script, without write_script)
-        -> voice -> align -> brief -> beats -> visuals -> review_visuals ⏸ (everything in order in
+        -> voice -> align -> brief -> beats -> labels (rótulos) -> visuals -> review_visuals ⏸ (everything in order in
         <run>/montaje/, to replace, remove or add files; no judge) -> assemble -> END
 
     text phase (LLM):  find_topics, research, angles, outline, deep_research, write_script, review_script
@@ -31,6 +31,7 @@ from graph.nodes.assemble import make_assemble
 from graph.nodes.beats import make_beats
 from graph.nodes.brief import make_brief
 from graph.nodes.deep_research import make_deep_research, make_review_research
+from graph.nodes.labels import make_labels
 from graph.nodes.manual_script import make_choose_script, make_manual_script
 from graph.nodes.outline import make_approve_outline, make_outline
 from graph.nodes.research import make_research
@@ -45,8 +46,8 @@ from graph.state import VideoState
 
 # Media nodes that can be run again on a run (scripts/run_pipeline.py --redo NODE):
 # the node before each one, to make the graph continue from it.
-REDO_AFTER = {"voice": "unload_llm", "align": "voice", "brief": "align", "beats": "brief", "visuals": "beats",
-              "assemble": "visuals"}
+REDO_AFTER = {"voice": "unload_llm", "align": "voice", "brief": "align", "beats": "brief", "labels": "beats",
+              "visuals": "labels", "assemble": "visuals"}
 
 
 def build_graph(hub, settings=None):
@@ -70,6 +71,7 @@ def build_graph(hub, settings=None):
     graph.add_node("align", make_align(settings))       # Whisper: the time of every word
     graph.add_node("brief", make_brief(hub, settings))  # LLM: the visual universe of the video
     graph.add_node("beats", make_beats(hub, settings))  # LLM: what is shown, from which word
+    graph.add_node("labels", make_labels(hub, settings))  # LLM: on-screen labels (source, person, term)
     graph.add_node("visuals", make_visuals(hub, settings))
     graph.add_node("review_visuals", make_review_visuals())            # routes with Command
     graph.add_node("assemble", make_assemble(settings))
@@ -85,7 +87,8 @@ def build_graph(hub, settings=None):
     graph.add_edge("voice", "align")
     graph.add_edge("align", "brief")
     graph.add_edge("brief", "beats")
-    graph.add_edge("beats", "visuals")
+    graph.add_edge("beats", "labels")
+    graph.add_edge("labels", "visuals")
     graph.add_edge("visuals", "review_visuals")
     graph.add_edge("assemble", END)
     return hub.workflow(graph)

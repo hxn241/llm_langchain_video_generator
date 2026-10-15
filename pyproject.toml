@@ -26,6 +26,7 @@ dependencies = [
     # media
     "imageio-ffmpeg",              # ffmpeg 7.1 inside the venv (h264_nvenc, loudnorm, sidechaincompress, ass)
     "edge-tts>=7",                 # voice.mode=edge (predefined voices, for tests)
+    "num2words",                   # figures in words before the voice ("1917" -> "mil novecientos diecisiete")
     "pillow",                      # contact sheets of stock thumbnails for the vision model; thumbnails
 ]
 

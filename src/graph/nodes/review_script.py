@@ -11,12 +11,16 @@ script_requests, to check it was done). It returns:
 What is left goes to <run>/script.md (section "Revisión") and to the choose_script pause, where
 [n] with a reason has it rewritten (graph/nodes/manual_script.py).
 """
+import json
+from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 from langgraph.types import Command
 
 from graph.script_files import ROLE_LABELS, TYPE_LABELS, save_script
 from graph.state import Outline, Script, ScriptReview
+from llmkit.config import ROOT
 from prompts import load_prompt
 from services.settings import load_settings, runs_dir
 
@@ -45,9 +49,24 @@ def review_request(state, video_format, outline, script, facts):
               "\n".join(f"{n}. {facts[n - 1]['fact']}" for n in used if 1 <= n <= len(facts)), "",
               f"# Guion ({script.word_count()} palabras: tus arreglos mantienen la longitud)", *lines]
     if state.get("script_requests"):
-        parts += ["", "# Cambios que se pidieron en esta reescritura (comprueba uno a uno que están hechos)",
+        parts += ["", "# Cambios que se pidieron en esta reescritura (comprueba uno a uno que están hechos; "
+                      "después, solo lo que la reescritura ha roto o lo grave: \"Si es una reescritura\")",
                   state["script_requests"]]
     return "\n".join(parts)
+
+
+def log_review(settings, run_id, video_format, revisions, rewrite, report):
+    """Every review of every video, one per line (config.yaml: review.log): the errors that come back
+    video after video are fixed in the writer's prompt, not by hand in each script."""
+    path = (settings.get("review") or {}).get("log")
+    if not path:
+        return
+    path = Path(path) if Path(path).is_absolute() else ROOT / path      # relative: to the project folder
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = {"date": datetime.now().isoformat(timespec="seconds"), "run_id": str(run_id), "format": video_format,
+            "round": revisions, "rewrite": rewrite} | report
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(line, ensure_ascii=False) + "\n")
 
 
 def make_review_script(hub, settings=None):
@@ -65,6 +84,8 @@ def make_review_script(hub, settings=None):
         report = {"summary": result.summary.strip(), "issues": issues, "dubious": dubious}
         serious = [i for i in issues if i["serious"]]
         revisions, limit = state.get("revisions") or 0, settings.get("review", {}).get("max_revisions", 1)
+        log_review(settings, state.get("run_id") or config["configurable"]["thread_id"], video_format,
+                   revisions, bool(state.get("script_requests")), report)
 
         if serious and revisions < limit:
             print(f"  · review_script: {len(serious)} cosas que arreglar -> se reescribe ({revisions + 1}/{limit})")

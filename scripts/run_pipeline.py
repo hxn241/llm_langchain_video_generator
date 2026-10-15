@@ -8,6 +8,8 @@
     python scripts/run_pipeline.py --topic "..." --type explainer    # news | explainer (default: the model decides)
     python scripts/run_pipeline.py --resume 20261004-153000      # a run left paused (e.g. at the outline)
     python scripts/run_pipeline.py --resume 20261004-153000 --redo visuals   # redo a media node and what follows
+    python scripts/run_pipeline.py --resume 20261004-153000 --redo voice --keep-visuals   # only a new voice:
+                                                     # the same images on its new times, no paid calls
 
 --type: news (something that has just happened: news searches) or explainer (something that does
 not expire, like how a thing works: the general web + Wikipedia). Without it the model decides
@@ -44,10 +46,11 @@ In a normal run, --redo reads script.json again: changed narration -> --redo voi
 their plan, beats.json, and follow the new words; nothing new is generated).
 In a manual run (yours at pause 3), --redo reads guion.md again: replaced files -> --redo visuals; changed marks
 -> --redo beats; changed narration -> --redo voice.
---redo (voice | align | brief | beats | visuals | assemble) runs that node again and the ones after
-it, also on a finished run (e.g. one made before that node existed). brief.json and beats.json are
-read again if they exist (your edits count): delete them for new ones. A brief.json newer than
-beats.json (new or edited) makes new beats.
+--redo (voice | align | brief | beats | labels | visuals | assemble) runs that node again and the ones
+after it, also on a finished run (e.g. one made before that node existed). brief.json, beats.json and
+rotulos.json are read again if they exist (your edits count): delete them for new ones. A brief.json
+newer than beats.json (new or edited) makes new beats. Only the labels (rótulos) again, keeping the
+images: delete rotulos.json and --redo labels --keep-visuals. Only edited their texts: --redo assemble.
 
 Each run is a LangGraph thread (id = run_id) saved in <STATE_DIR>/checkpoints.sqlite,
 and its files go to <STATE_DIR>/runs/<run_id>/.
@@ -64,7 +67,7 @@ from services import LLMHub, approve_all, ask_decisions, costs, run_cli, topics
 from services.settings import load_settings, runs_dir
 
 REDO_NEEDS = {"voice": ["script"], "align": ["script", "audio"], "brief": ["script", "audio"],
-              "beats": ["script", "audio"],
+              "beats": ["script", "audio"], "labels": ["script", "audio"],
               "visuals": ["script", "audio", "beats"], "assemble": ["script", "audio", "visuals"]}
 
 
@@ -80,6 +83,9 @@ def parse_args():
     parser.add_argument("--resume", metavar="RUN_ID", help="continue a paused run")
     parser.add_argument("--redo", choices=sorted(REDO_AFTER), help="with --resume: run this node again "
                                                                        "and the ones after it")
+    parser.add_argument("--keep-visuals", action="store_true",
+                        help="with --redo voice/align/brief/beats: the same images on the new times (nothing "
+                             "searched, judged or generated: no paid calls)")
     parser.add_argument("--yes", action="store_true", help="approve every pause without asking (the written script, "
                                                            "no images of yours)")
     parser.add_argument("--manual", action="store_true", help="straight to your script, without write_script "
@@ -93,6 +99,8 @@ def parse_args():
         parser.error("--type is chosen when the run starts (a resumed run keeps its research)")
     if args.redo and not args.resume:
         parser.error("--redo needs --resume RUN_ID")
+    if args.keep_visuals and args.redo not in ("voice", "align", "brief", "beats", "labels"):
+        parser.error("--keep-visuals goes with --redo voice | align | brief | beats | labels")
     return args
 
 
@@ -160,6 +168,10 @@ def main():
             if missing:
                 raise SystemExit(f"Run {run_id!r} has no {', '.join(missing)} yet: it cannot redo {args.redo}")
             update = (manual_update if values.get("manual") else script_update)(values, run_id, args.redo)
+            if args.keep_visuals:
+                if not values.get("visuals"):
+                    raise SystemExit(f"Run {run_id!r} has no images yet: --keep-visuals has nothing to keep")
+                update = {**update, "keep_visuals": True}
             app.update_state(thread, update, as_node=REDO_AFTER[args.redo])   # the graph goes on from there
         elif not app.get_state(thread).next:
             raise SystemExit(f"Run {run_id!r} already finished: nothing to resume (use --redo NODE)")

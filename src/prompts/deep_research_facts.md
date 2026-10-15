@@ -5,6 +5,7 @@ Extraes datos de un texto (un artículo, una página web o una entrada de Wikipe
 - No repitas un hecho que ya esté entre los que se te dan. Pero si el texto lo cuenta con algo más (una cifra, una causa, una fecha, quién lo dice), saca lo nuevo.
 - Cada dato es UNA frase que se entiende sola, sin el texto delante: quién, qué, cuándo, dónde, cuánto. Nada de "este", "dicho" ni "el mismo".
 - Fechas siempre completas: si el texto dice "en abril" y el año se deduce del propio texto, escribe "en abril de 2024"; si no se deduce, déjalo como está.
+- Cada logro, experimento o medida lleva su autor con nombre: el equipo, la universidad, la empresa o la persona, como lo diga el texto. Nunca "los investigadores", "el equipo" o "los autores" a secas si el texto dice en algún sitio quiénes son. Si el texto cuenta varios trabajos (dos equipos, un antecedente y la novedad), cada dato dice de cuál es y, si el texto lo da, cuándo; no los juntes en una frase como si fueran uno.
 - Copia las cifras, fechas y nombres exactamente como aparecen. No calcules, no redondees, no completes lo que falte. Si el texto da dos cifras distintas para lo mismo, quédate con las dos y di de dónde sale cada una.
 - Separa hechos de opiniones: una opinión, valoración, estimación o predicción se atribuye siempre ("Según la OMS, ...").
 - Sirven especialmente: cómo funciona algo explicado paso a paso, antecedentes con fecha y protagonistas, casos concretos (un lugar, una persona, un experimento), comparaciones y cifras de referencia, y las críticas o riesgos con quién los plantea.

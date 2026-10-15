@@ -25,11 +25,13 @@ assembled; the topic without accents or symbols, e.g. 20261011_Google_lanza_su_p
    narration is normalized again to video.loudness_lufs. Music (montaje/musica.mp3, yours):
    looped or cut to the video, at a FIXED level video.music.db under the voice (no ducking),
    with a dip in the voice's frequencies and fades; the mix is normalized again.
-3. Final pass: narration + subtitles (ASS, graph/subtitles.py; video.subtitles) burned in,
-   h264_nvenc, AAC. (No on-screen text over the scenes any more: the subtitles replace it.)
+3. Final pass: narration + subtitles (ASS, graph/subtitles.py; video.subtitles) + the labels
+   (rótulos: source, person, key term; <run>/rotulos.json -> graph/onscreen.py) burned in,
+   h264_nvenc, AAC.
 
 Segments stay in <run>/segments/ (to redo one scene later).
 """
+import json
 import os
 import re
 import unicodedata
@@ -38,7 +40,8 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from graph import montage, subtitles
+from graph import montage, onscreen, subtitles
+from graph.nodes import labels as labels_node
 from graph.state import Script
 from llmkit.config import BASE
 from services import media, workers
@@ -235,6 +238,16 @@ def ass_filter(path, settings):
     return f"ass={media.filter_path(path, BASE)}" + (f":fontsdir={media.filter_path(fonts, BASE)}" if fonts else "")
 
 
+def labels_now(folder, script, audio, labels):
+    """The labels to draw: <run>/rotulos.json if it is there (your edits count), on the current times;
+    otherwise the state's."""
+    path = folder / labels_node.FILE
+    if not path.exists():
+        return labels or []
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    return [p for p in (labels_node.place(l, script, audio) for l in saved) if p]
+
+
 def make_assemble(settings=None):
     settings = settings or load_settings()
 
@@ -308,6 +321,15 @@ def make_assemble(settings=None):
         if burned:
             subtitles_path.write_text(burned, encoding="utf-8")
             filters.append(ass_filter(subtitles_path, settings))
+        # the labels (rótulos): rotulos.json as it is now (you may have edited it at the pause)
+        label_options = video.get("labels") or {}
+        on_screen = onscreen.document(labels_now(folder, script, audio, state.get("labels"))
+                                      if label_options.get("enabled", True) else [],
+                                      starts, lengths, width, height, video.get("font", "Arial"), label_options)
+        labels_path = folder / "rotulos.ass"
+        if on_screen:
+            labels_path.write_text(on_screen, encoding="utf-8")
+            filters.append(ass_filter(labels_path, settings))
         video_args = (["-vf", ",".join(filters), *media.encode_args(video.get("quality", 21), fps, encoder)]
                       if filters else ["-c:v", "copy"])
         final = folder / video_name(state.get("topic") or script.title)

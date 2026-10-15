@@ -6,6 +6,9 @@ voice.mode in config.yaml:
 - edge:   edge-tts predefined voice (tests; see services/tts.py). Gives word timings.
 - record: you record each scene (README; not implemented yet)
 
+The voice gets the figures in words (tts.spoken: "1917" -> "mil novecientos diecisiete"; read as
+digits, the 2026-10-15 butterflies voice said the year oddly); the script keeps them.
+
 The silence the TTS leaves at the end is cut, so the next scene's image changes
 right when the idea changes (the pause between scenes is added in assemble).
 Without word timings (clone), `words` stays empty: the subtitles node will get
@@ -45,7 +48,7 @@ def make_voice(settings=None):
                 raise FileNotFoundError(f"Missing the reference voice ({options['reference']} and "
                                         f"{options['reference_text']}): run scripts/design_voice.py")
             raw = {s.id: folder / f"scene_{s.id:02d}.raw.wav" for s in script.scenes}
-            tts.clone_qwen([s.narration for s in script.scenes], [raw[s.id] for s in script.scenes],
+            tts.clone_qwen([tts.spoken(s.narration) for s in script.scenes], [raw[s.id] for s in script.scenes],
                            reference, reference_text.read_text(encoding="utf-8").strip(), options["clone"])
             for s in script.scenes:
                 media.normalize_loudness(raw[s.id], wav[s.id], lufs, trim_silence=True)
@@ -54,7 +57,7 @@ def make_voice(settings=None):
         elif options["mode"] == "edge":
             for s in script.scenes:
                 raw = folder / f"scene_{s.id:02d}.mp3"
-                words[s.id] = tts.synthesize_edge(s.narration, raw, **options["edge"])
+                words[s.id] = tts.synthesize_edge(tts.spoken(s.narration), raw, **options["edge"])
                 end = words[s.id][-1]["end"] + TAIL if words[s.id] else None
                 media.normalize_loudness(raw, wav[s.id], lufs, end=end)
                 raw.unlink()

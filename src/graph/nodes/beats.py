@@ -50,12 +50,14 @@ QUERY_STOPWORDS = {"a", "an", "the", "of", "in", "on", "with", "through", "and",
                    "from", "by", "over", "under"}
 NEGATIONS = {"no", "not", "without", "none", "never", "empty"}   # a search can't ask for an absence: dropped
                               # (cut to 3 words, "space radiator no water" became "space radiator no")
-FIELDS = ("id", "scene", "word", "start", "seconds", "text", "kind", "idea", "look", "must_show", "must_not_show",
+FIELDS = ("id", "scene", "word", "start", "seconds", "text", "kind", "idea", "look", "generate", "must_show", "must_not_show",
           "subject", "queries", "prompt", "path")   # beats.json, in this order
 # What cannot be photographed (an atom, a magnetic field) is shown as a scientific visualization: its
 # own style instead of the brief's photographic one (config.yaml: visuals.visualization_style)
-VISUALIZATION_STYLE = ("photorealistic scientific visualization as in a science documentary, dark background, "
-                       "soft volumetric glow, cinematic lighting, no text, no labels, no diagrams")
+# (no fixed background or glow: with "dark background, soft volumetric glow" every visualization of the
+# nuclear clock video, 2026-10-15, looked the same)
+VISUALIZATION_STYLE = ("photorealistic scientific visualization as in a science documentary, cinematic lighting, "
+                       "no text, no labels, no diagrams")
 # A search used in more shots than this makes a monotonous video (2026-10-15, nuclear clock:
 # "laser optics table" in 12 of 40 shots). Each call plans SCENES_PER_CALL scenes and is told the
 # searches of the scenes planned before (used_queries), since it does not see them otherwise.
@@ -77,8 +79,10 @@ def beats_request(state, script, audio, numbers, style, seconds, visualization_s
         parts += ["", "# Brief visual (todo plano sale de aquí)"] + brief_lines(state["brief"])
     parts += ["", f"Duración de cada plano: entre {seconds[0]} y {seconds[1]} segundos (una idea más larga "
                   "se ve con varios de sus planos seguidos).",
-              f"Estilo de los planos photo (termina su prompt con esto): {style}",
-              f"Estilo de los planos visualization (termina su prompt con esto): {visualization_style}", "",
+              f"Acabado de los planos photo (termina su prompt con esto; la luz, el color y el encuadre "
+              f"los elige cada plano): {style}",
+              f"Acabado de los planos visualization (termina su prompt con esto; el fondo y el color los "
+              f"elige cada una): {visualization_style}", "",
               "# Guion completo (número. [segundos · planos que necesita la escena] narración)",
               "Entre todas las ideas de una escena tiene que haber, como mínimo, tantos planos DISTINTOS "
               "como dice la escena: si una escena necesita 4 planos y tiene una sola idea, esa idea lleva "
@@ -115,7 +119,8 @@ def with_shot(beat):
     shots = beat.pop("shots")
     shot = shots[min(beat.pop("part", 0), len(shots) - 1)]
     return beat | {"subject": shot["subject"], "prompt": shot["prompt"], "must_show": shot["must_show"],
-                   "queries": short_queries(shot["queries"]), "look": shot.get("look", "photo")}
+                   "queries": short_queries(shot["queries"]), "look": shot.get("look", "photo"),
+                   "generate": shot.get("generate", False)}
 
 
 def locate(phrase, words, after):
@@ -322,7 +327,8 @@ def make_beats(hub, settings=None):
         beats_file.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         kinds = [b["kind"] for b in result]
         print(f"  · beats: {len(result)} fragmentos en {len(script.scenes)} escenas · "
-              + ", ".join(f"{kinds.count(k)} {k}" for k in dict.fromkeys(kinds)))
+              + ", ".join(f"{kinds.count(k)} {k}" for k in dict.fromkeys(kinds))
+              + f" · {sum(bool(b.get('generate')) for b in result)} directos a generar")
         manual.write_beat_prompts(runs_dir(run_id), result, width, height, state.get("brief"))
         return {"beats": result}
 
