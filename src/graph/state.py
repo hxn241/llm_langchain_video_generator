@@ -350,6 +350,13 @@ class LabelsDraft(BaseModel):
                                      description="Los rótulos del vídeo, en el orden en que aparecen")
 
 
+class PortraitChoice(BaseModel):
+    reason: str = Field(description="Por qué es o no es la persona del vídeo: sus ocupaciones, dónde trabaja y "
+                                    "sus años frente al rótulo y la narración (1-2 frases)")
+    id: str = Field(default="", description="El id de la ficha (Q...) que es SEGURO la persona del vídeo; vacío "
+                                            "si ninguna lo es o hay duda")
+
+
 class Label(TypedDict, total=False):
     scene: int
     word: int                 # index of the word it appears on, in the scene's narration
@@ -358,6 +365,10 @@ class Label(TypedDict, total=False):
     kind: str                 # LabelKind
     title: str
     subtitle: str
+    foto: str                 # persona: their portrait, relative to the run (retratos/...jpg); optional
+    foto_ficha: str           # the Wikidata page it was taken from (to check it is them)
+    foto_quien: str           # what that page says they are
+    foto_credito: str         # author · licence · Commons page (goes to creditos.txt)
 
 
 class VisualChoice(BaseModel):

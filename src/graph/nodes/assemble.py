@@ -248,6 +248,37 @@ def labels_now(folder, script, audio, labels):
     return [p for p in (labels_node.place(l, script, audio) for l in saved) if p]
 
 
+def without_photo(label):
+    return {k: v for k, v in label.items() if not k.startswith("foto")}
+
+
+def photo_overlays(photos, folder, work, fps, filters):
+    """The labels' portraits over the video (onscreen.photos): each one framed in white at its size
+    (cut to 4:5, the face is usually in the upper part), slid in and faded like the text, and the ASS
+    filters after them (the text on top). -> (extra ffmpeg inputs, filter_complex) or ([], None)."""
+    if not photos:
+        return [], None
+    inputs, chain, last = [], [], "0:v"
+    for n, p in enumerate(photos):
+        border = max(2, round(p["h"] * 0.015))
+        with Image.open(folder / p["path"]) as image:
+            framed = ImageOps.expand(ImageOps.fit(image.convert("RGB"), (p["w"] - 2 * border, p["h"] - 2 * border),
+                                                  Image.Resampling.LANCZOS, centering=(0.5, 0.3)),
+                                     border=border, fill="white")
+        still = work / f"retrato_{n + 1:02d}.png"
+        framed.save(still)
+        inputs += ["-loop", 1, "-framerate", fps, "-t", f"{p['end']:.3f}", "-i", still]
+        s, e = p["start"], p["end"]
+        chain.append(f"[{n + 2}:v]format=rgba,fade=t=in:st={s:.3f}:d={onscreen.FADE_IN}:alpha=1,"
+                     f"fade=t=out:st={e - onscreen.FADE_OUT:.3f}:d={onscreen.FADE_OUT}:alpha=1[p{n}]")
+        slide = f"{p['x']}-{onscreen.SLIDE}*max(0,1-(t-{s:.3f})/{onscreen.SLIDE_SECONDS})"
+        chain.append(f"[{last}][p{n}]overlay=x='{slide}':y={p['y']}:enable='between(t,{s:.3f},{e:.3f})'"
+                     f":eof_action=pass[o{n}]")
+        last = f"o{n}"
+    chain.append(f"[{last}]{','.join(filters) or 'null'}[v]")
+    return inputs, ";".join(chain)
+
+
 def make_assemble(settings=None):
     settings = settings or load_settings()
 
@@ -314,28 +345,45 @@ def make_assemble(settings=None):
             print(f"  · assemble: música {music.name} a {options.get('db', -20)} dB bajo la voz")
 
         # 3. final pass: subtitles burned in (if any) + audio
-        filters = []
         burned = subtitles.burned_document(audio, starts, lengths, width, height, video.get("font", "Arial"),
                                            (video.get("subtitles") or {}).get(video_format) or {})
         subtitles_path = folder / "subtitulos.ass"
         if burned:
             subtitles_path.write_text(burned, encoding="utf-8")
-            filters.append(ass_filter(subtitles_path, settings))
         # the labels (rótulos): rotulos.json as it is now (you may have edited it at the pause)
         label_options = video.get("labels") or {}
-        on_screen = onscreen.document(labels_now(folder, script, audio, state.get("labels"))
-                                      if label_options.get("enabled", True) else [],
-                                      starts, lengths, width, height, video.get("font", "Arial"), label_options)
-        labels_path = folder / "rotulos.ass"
-        if on_screen:
-            labels_path.write_text(on_screen, encoding="utf-8")
-            filters.append(ass_filter(labels_path, settings))
-        video_args = (["-vf", ",".join(filters), *media.encode_args(video.get("quality", 21), fps, encoder)]
-                      if filters else ["-c:v", "copy"])
+        labels = (labels_now(folder, script, audio, state.get("labels"))
+                  if label_options.get("enabled", True) else [])
+        labels = [l if not l.get("foto") or (folder / l["foto"]).is_file() else without_photo(l) for l in labels]
         final = folder / video_name(state.get("topic") or script.title)
-        media.ffmpeg("-i", joined, "-i", narration, "-map", "0:v", "-map", "1:a", *video_args,
-                     "-c:a", "aac", "-b:a", "192k", "-ar", media.SAMPLE_RATE, "-movflags", "+faststart",
-                     final, cwd=BASE)
+
+        def final_pass(labels):
+            filters = [ass_filter(subtitles_path, settings)] if burned else []
+            on_screen = onscreen.document(labels, starts, lengths, width, height, video.get("font", "Arial"),
+                                          label_options)
+            labels_path = folder / "rotulos.ass"
+            if on_screen:
+                labels_path.write_text(on_screen, encoding="utf-8")
+                filters.append(ass_filter(labels_path, settings))
+            inputs, graph = photo_overlays(onscreen.photos(labels, starts, lengths, width, height, label_options),
+                                           folder, segments_dir, fps, filters)
+            if graph:
+                video_args = ["-filter_complex", graph, "-map", "[v]"]
+            else:
+                video_args = ["-map", "0:v"] + (["-vf", ",".join(filters)] if filters else [])
+            video_args += media.encode_args(video.get("quality", 21), fps, encoder) if filters or graph else ["-c:v", "copy"]
+            media.ffmpeg("-i", joined, "-i", narration, *inputs, *video_args, "-map", "1:a",
+                         "-c:a", "aac", "-b:a", "192k", "-ar", media.SAMPLE_RATE, "-movflags", "+faststart",
+                         final, cwd=BASE)
+
+        try:
+            final_pass(labels)
+        except Exception as e:                       # noqa: BLE001 - without the photos it is the video as before
+            if not any(l.get("foto") for l in labels):
+                raise
+            print(f"  ⚠️  assemble: los retratos fallaron ({str(e).strip().splitlines()[-1][:200]}): "
+                  "los rótulos van solo con texto")
+            final_pass([without_photo(l) for l in labels])
         joined.unlink()
         return {"video_path": str(final), **({"subtitles_path": str(subtitles_path)} if burned else {})}
 

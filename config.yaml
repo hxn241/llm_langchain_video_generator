@@ -57,6 +57,8 @@ llm:
   review_script: {temperature: 0.2, fallback: cloud}
   # Rótulos en pantalla (fuente, persona, término clave): una llamada por vídeo con el guion y los hechos
   labels:       {temperature: 0.2, fallback: cloud}
+  # Retrato de una persona rotulada: ¿es esta ficha de Wikidata la persona del vídeo? (una llamada por persona con foto)
+  portraits:    {model: "anthropic/claude-haiku-5.5", temperature: 0.0, fallback: labels}
   # Plan visual (brief: el universo visual del vídeo; beats: las ideas y sus planos). Es donde más
   # se nota un modelo fuerte (traducir metáforas a planos filmables) y son 2-5 llamadas por vídeo.
   # Con un modelo de OpenRouter (OPENROUTER_API_KEY en el .env): structured_output: json_schema
@@ -234,7 +236,9 @@ video:
   # Rótulos (nodo labels -> <run>/rotulos.json, editable; graph/onscreen.py los dibuja arriba a la
   # izquierda): la fuente de un estudio, el nombre y cargo de quien se cita, el término clave en rojo.
   # seconds: cuánto se ve cada tipo. enabled: false = sin rótulos.
-  labels: {enabled: true, seconds: {fuente: 4.5, persona: 4.5, termino: 3.0}}
+  # portraits: la foto de la persona junto a su rótulo, si Wikidata tiene una con licencia libre y es
+  # seguro ella (en rotulos.json: "foto"; bórrala ahí para quitarla). false = solo el texto.
+  labels: {enabled: true, portraits: true, seconds: {fuente: 4.5, persona: 4.5, termino: 3.0}}
   # Música: la tuya, montaje/musica.mp3 en la pausa review_visuals (sin ella, sin música). Volumen FIJO
   # (sin ducking): db por debajo de la voz (-17 más alta, -23 más baja); eq_db: hueco en 1-4 kHz para la voz.
   music: {db: -20, eq_db: -4, fade_in: 2, fade_out: 3}

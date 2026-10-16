@@ -1,6 +1,7 @@
 """review_visuals ⏸: after visuals, before assemble. You check <run>/montaje/ (graph/montage.py):
 one file per beat in order (01.mp4, 02.jpg...) and lista.md (time, text and origin of each).
-Replace, remove or add files there, then:
+The labels' portraits are listed too, with the Wikidata card each came from (not them: delete its
+"foto" in <run>/rotulos.json). Replace, remove or add files there, then:
 [y] -> assemble uses exactly what is in the folder, without any judge.
 [n] -> stops without assembling; later `--redo assemble` reads the folder again and comes back here.
 """
@@ -21,10 +22,14 @@ def make_review_visuals():
         if not folder.exists():               # a run from before montaje/ existed. Only when missing: on
             montage.write(run_folder, state["beats"], state.get("visuals") or {},   # resume it must not undo yours
                           state.get("visual_extras"))
+        portraits = [f"{l['title']}: {l['foto']} ({l.get('foto_quien') or 'sin descripción'}; {l.get('foto_ficha', '')})"
+                     for l in state.get("labels") or [] if l.get("foto")]
         decision = ask_approval(
             "review_visuals",
             {"carpeta": str(folder), "lista": str(folder / montage.LIST_FILE),
-             "responde": "[y] monta con lo que hay en la carpeta (sin juez) · [n] para sin montar "
+             **({"retratos": "\n         ".join(portraits + ['¿No es esa persona? Borra su "foto" en rotulos.json'])}
+                if portraits else {}),
+             "responde":"[y] monta con lo que hay en la carpeta (sin juez) · [n] para sin montar "
                          "(luego: --redo assemble)"},
             description="Revisa lo que va al vídeo", allowed=("approve", "reject"))
         if decision["type"] == "reject":

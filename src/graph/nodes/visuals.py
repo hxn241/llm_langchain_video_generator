@@ -212,7 +212,8 @@ def parts_of(beat, photo_max):
 
 def write_credits(run_folder, chosen, extras=None):
     """<run>/creditos.txt: who made each image and video found, with its licence, to paste into the
-    video's description (Wikimedia's CC BY / CC BY-SA require it; the rest are a courtesy)."""
+    video's description (Wikimedia's CC BY / CC BY-SA require it; the rest are a courtesy). The
+    portraits of the labels (rotulos.json, "foto_credito") too."""
     lines, seen = [], set()
     every = [v for beat_id in sorted(chosen) for v in [chosen[beat_id], *(extras or {}).get(beat_id, [])]]
     for v in every:
@@ -220,6 +221,10 @@ def write_credits(run_folder, chosen, extras=None):
             continue
         seen.add(v["source_url"])
         lines.append(" · ".join(x for x in (v.get("author") or v["provider"], v.get("license"), v["source_url"]) if x))
+    labels_file = run_folder / "rotulos.json"
+    if labels_file.exists():
+        lines += [c for c in dict.fromkeys(l.get("foto_credito") for l in json.loads(labels_file.read_text(encoding="utf-8")))
+                  if c and c not in lines]
     (run_folder / "creditos.txt").write_text("Imágenes y vídeos:\n" + "\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -294,6 +299,7 @@ def make_visuals(hub, settings=None):
             chosen = {int(k): v for k, v in state["visuals"].items()}
             extras = {int(k): v for k, v in (state.get("visual_extras") or {}).items()}
             folder = montage.write(runs_dir(run_id), [plain(b) for b in state["beats"]], chosen, extras)
+            write_credits(runs_dir(run_id), chosen, extras)          # the labels' portraits may be new
             print(f"  · visuals: las mismas imágenes con los tiempos nuevos, sin buscar ni generar ({folder})")
             return {"visuals": chosen, "visual_extras": extras, "keep_visuals": False}
         video_format = state.get("format") or settings.get("format", "long")
