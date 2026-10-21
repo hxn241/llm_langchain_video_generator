@@ -10,7 +10,7 @@ Es el motor del canal **Datazo**: cada vídeo gira alrededor de un dato que sorp
 
 | Local (gratis) | Nube |
 |---|---|
-| Voz (Qwen3-TTS), tiempos de cada palabra (Whisper), filtro de imágenes (SigLIP 2), imágenes generadas (Z-Image Turbo en ComfyUI), 2.5D (Depth Anything), montaje (ffmpeg + NVENC) | Texto: Claude Sonnet 5.5 en OpenRouter (de pago); extraer hechos: Claude Haiku 5.5. Juez de imágenes: Gemma 4 31B en OpenRouter. Búsquedas (Tavily o DuckDuckGo), Wikipedia, bancos de imágenes, YouTube |
+| Voz (Qwen3-TTS), tiempos de cada palabra (Whisper), filtro de imágenes (SigLIP 2), imágenes generadas (Z-Image Turbo en ComfyUI), 2.5D (Depth Anything), montaje (ffmpeg + NVENC) | Texto: Claude Sonnet 5.5 en OpenRouter (de pago); extraer hechos, juez de imágenes y retratos: Claude Haiku 5.5. Búsquedas (Tavily o DuckDuckGo), Wikipedia, bancos de imágenes, YouTube |
 
 Coste estimado de un vídeo largo (5 min): **~0,9–1,2 $** (todo el texto y el juez; la voz y las imágenes generadas en local no cuestan nada). El gasto real de cada run queda en `<run>/costes.md`, por nodo.
 
@@ -45,10 +45,11 @@ Coste estimado de un vídeo largo (5 min): **~0,9–1,2 $** (todo el texto y el 
   | | Resolución | Duración | Escenas | Secciones |
   |---|---|---|---|---|
   | **Short** | 9:16, 1080×1920 | ~75 s (65–85), ~188 palabras | 10–16 | 3–4 |
-  | **Largo** | 16:9, 1920×1080 | ~5 min (270–330 s) | 24–38 | 4–6 |
+  | **Largo** | 16:9, 1920×1080 | ~5,5 min (330 s; 300–360) | 24–40 | 4–5 |
 
 - **Guion:** español de España, al espectador se le habla de **tú** (solo cuando el tema le toca). Gancho con la sorpresa primero, tensión hasta el final y un cierre que vuelve al gancho. La última frase **nunca** es una pregunta.
-- **Estilo:** voz en off, imágenes y clips que cambian justo en la palabra que los nombra, movimiento de cámara (con 2.5D) en las fotos y subtítulos quemados. Opcionalmente, música propia.
+  - En los largos, justo después del gancho, una **presentación** de una o dos frases (ver `write_script`).
+- **Estilo:** voz en off, imágenes y clips que cambian justo en la palabra que los nombra, movimiento de cámara en las fotos (2.5D opcional, `video.parallax`), **rótulos** (fuente, persona con su retrato, término clave) y subtítulos quemados. Opcionalmente, música propia.
   - Short: subtítulos de 3 palabras con la palabra que se dice resaltada.
   - Largo: frases clásicas en 1–2 líneas.
 
@@ -62,7 +63,8 @@ Coste estimado de un vídeo largo (5 min): **~0,9–1,2 $** (todo el texto y el 
 | Envoltorio LLM | `src/llmkit` + `services/llm_hub.py` (`LLMHub`) | Modelo por nodo, salida estructurada, pausas, checkpoints |
 | Texto | **Claude Sonnet 5.5** vía **OpenRouter** | Todos los nodos de texto. Respaldo automático si falla: Nemotron 3 Super (gratis) |
 | Extraer hechos | **Claude Haiku 5.5** vía OpenRouter (`llm.facts`) | Cada texto leído en `research` y `deep_research`; ~20 veces más barato que Sonnet. Respaldo: Sonnet |
-| Juez de imágenes (visión) | **Gemma 4 31B** vía OpenRouter | Respaldo: la versión `:free` |
+| Juez de imágenes (visión) | **Claude Haiku 5.5** vía OpenRouter (`llm.visuals`) | Ve las fichas (título y descripción) de cada candidato. Respaldo: Gemma 4 31B `:free` |
+| Rótulos y retratos | Sonnet (`llm.labels`) + **Wikidata** / Commons; Haiku confirma cada retrato (`llm.portraits`) | Sin foto si hay la menor duda |
 | LLM local (opcional) | **LM Studio** (`localhost:1234/v1`) | Hoy no se usa en ningún nodo. `unload_llm` libera su VRAM antes de la fase de medios |
 | Temas | `feedparser` + 17 feeds de ciencia y tecnología | `data/temas/registro.json`: ningún tema se repite |
 | Investigación | `trafilatura`, Tavily o DuckDuckGo (`ddgs`), API de Wikipedia | Tiendas, anuncios, redes y foros nunca son fuente (`research.skip_domains`) |
@@ -123,13 +125,13 @@ Coste estimado de un vídeo largo (5 min): **~0,9–1,2 $** (todo el texto y el 
   ── fin de la fase de texto ──────────────────────────────────────────────
           │
           ▼
-     voice (Qwen3-TTS) ─► align (Whisper) ─► brief 🤖 ─► beats 🤖 ─► visuals 🤖
-                                                                       │
-                                                                       ▼
-                                                    ⏸ review_visuals (<run>/montaje/)
-                                                                       │
-                                                                       ▼
-                                                                  assemble ─► <run>/<fecha>_<tema>.mp4
+     voice (Qwen3-TTS) ─► align (Whisper) ─► brief 🤖 ─► beats 🤖 ─► labels 🤖 ─► visuals 🤖
+                                                                                    │
+                                                                                    ▼
+                                                                 ⏸ review_visuals (<run>/montaje/)
+                                                                                    │
+                                                                                    ▼
+                                                                               assemble ─► <run>/<fecha>_<tema>.mp4
 
   Fuera del grafo:  prepare_upload.py ─► data/listo_para_subir/<vídeo>/ ─► upload_youtube.py ─► YouTube
 
@@ -207,13 +209,14 @@ Busca el contexto de cada sección que tenga preguntas. Corre en shorts y en lar
 - `[n]` + `4 https://... 6 https://...` añade tus enlaces a esas secciones.
 
 ### `write_script` 🤖
-- **Short:** el guion entero en una llamada, porque es un solo arco.
-- **Largo:** una sección por llamada. Cada llamada ve:
+- **Hasta `script.whole_max_words` (1200) palabras** —los shorts y los largos de 5–6 min—: el guion entero en una llamada, y las reescrituras también. Por secciones, cada una repetía las ideas de las otras.
+- **Más largo:** una sección por llamada. Cada llamada ve:
   - el esquema entero;
   - sus hechos;
   - cómo acabó la sección anterior;
   - qué hechos ya se contaron.
   - La última sección, además, ve cómo empezó el vídeo.
+- **Presentación (solo largos, `graph/intros.py`):** justo después del gancho, una o dos frases en las que el narrador presenta el vídeo. Hay 5 formas (`promesa`, `narrador`, `mapa`, `pregunta`, `viaje`); cada vídeo largo usa la siguiente a la del anterior, y un run conserva la suya en las reescrituras. El registro está en `data/presentaciones.json`.
 - Antes de las escenas, el modelo escribe un **plan**: la pregunta que abre, dónde se complica, dónde va el dato potente y cómo cierra. Va a `<run>/plan_guion.md` y no se narra.
 - Si no cumple la longitud o repite expresiones entre escenas, se le pide **una** vez más diciendo qué arreglar.
 - Las fuentes del guion salen de la investigación, nunca del modelo.
@@ -276,9 +279,20 @@ Planifica **por idea**: 1–2 ideas por escena. Cada idea lleva:
 
 Después, el código coloca cada idea en su palabra:
 - une los planos más cortos que `min_beat_seconds`;
-- parte los más largos que `beat_seconds` (short 2–4 s, largo 5–10 s), y cada parte enseña otro plano de la idea.
+- parte los más largos que `beat_seconds` (short 2–4 s, largo 4–6 s), y cada parte enseña otro plano de la idea.
 
 Se guarda en `beats.json`, `manual/prompts_imagenes.md` y `plan_visual.json` (los prompts, para generar imágenes a mano con otra IA).
+
+### `labels` 🤖
+Una llamada por vídeo con el guion narrado y los hechos (`prompts/labels.md`). Decide dónde aparece cada rótulo, como mucho una vez cada uno:
+- **fuente:** el estudio, la revista o la institución ("Estudio publicado en Nature · 2026");
+- **persona:** alguien con nombre, y su cargo;
+- **término:** un concepto clave, la primera vez que se explica.
+
+Cada rótulo empieza en la palabra en la que se dice y `assemble` lo dibuja encima del vídeo (`graph/onscreen.py`).
+- **Retratos** (`video.labels.portraits`): un rótulo de persona lleva su foto si Wikidata tiene a alguien con ese nombre exacto y una foto libre en Commons, **y** Haiku confirma que esa ficha es la persona del vídeo (`prompts/portraits.md`). Ante cualquier duda, solo el texto.
+- Se guarda en `rotulos.json` (y las fotos en `retratos/`). Si existe, se usa tal cual: puedes cambiar un texto, quitar un rótulo o borrar una `"foto"`. Bórralo para que se generen otros (`--redo labels`).
+- `video.labels.enabled: false`: sin rótulos.
 
 ### `visuals` 🤖
 Por cada plano:
@@ -297,7 +311,7 @@ Por cada plano:
 4. Lo que no pasa el juez se **genera** con Z-Image en ComfyUI (o con Nano Banana si `generator: openrouter`). Con el mismo prompt se reutiliza la imagen, no se regenera.
 
 Más reglas:
-- En vídeos largos, una foto no dura más de `photo_max_seconds` (5 s).
+- En vídeos largos, una foto no dura más de `photo_max_seconds` (7,5 s).
   - Primero se busca un **vídeo** para ese plano.
   - Si no hay, el plano se reparte entre varias imágenes (`05.jpg` + `05b.jpg`).
 - Cada clip o foto se usa una sola vez por vídeo.
@@ -314,7 +328,8 @@ Más reglas:
 
 ### `assemble`
 - **Clips de vídeo:** se quitan las bandas negras y se recortan para llenar el cuadro. Si un clip es corto, se ralentiza un poco y se congela el último fotograma.
-- **Fotos:** movimiento lento y distinto en cada una (zoom, paneo, inclinación), con **2.5D** (Depth Anything) si `video.parallax`.
+- **Fotos:** movimiento lento y distinto en cada una (zoom, paneo, inclinación), con **2.5D** (Depth Anything) si `video.parallax.enabled` (desactivado por defecto).
+- **Rótulos:** los de `rotulos.json`, con su retrato si lo tienen, encima del vídeo durante `video.labels.seconds`.
 - **Transiciones:** fundido cruzado solo entre escenas. Dentro de una escena, corte seco en la palabra clave.
 - **Audio:**
   - la voz se normaliza a −14 LUFS;
@@ -349,14 +364,17 @@ Más reglas:
 | `manual/` | `guion.md` y `visuales/` (modo manual); `prompts_imagenes.md` y `plan_visual.json` (siempre) |
 | `audio/` | Un WAV por escena |
 | `brief.json` / `beats.json` | El plan visual (se editan; `--redo brief` o `--redo beats`) |
+| `rotulos.json` / `retratos/` | Los rótulos en pantalla y las fotos de las personas (se edita; `--redo labels`) |
 | `visuals/` | Lo descargado y generado; `thumbs/` (candidatos), `choices.json` (qué se eligió y por qué), `searches.json` (caché) |
 | `montaje/` | Lo que entra en el vídeo, en orden, más `lista.md`, `.auto.json` y `musica.mp3` (opcional) |
 | `creditos.txt` | Atribuciones de Wikimedia |
 | `segments/` | Los trozos de vídeo de cada plano |
+| `costes.md` | Lo que ha costado el run, por nodo |
 | `<yyyymmdd>_<tema>.mp4` | El vídeo final |
 
 Fuera de los runs:
 - `data/checkpoints.sqlite`: el estado de LangGraph.
+- `data/presentaciones.json`: la forma de presentación de cada vídeo largo.
 - `data/temas/`: las búsquedas de temas y `registro.json`.
 - `data/listo_para_subir/` y `data/subidos/`.
 
@@ -380,6 +398,7 @@ Claves principales:
 | `script`, `script_plan`, `script_review`, `script_notes`, `revisions` | Guion, plan, revisión y reescrituras |
 | `audio` | `scene_id → {path, duration, words[{word, start, end}]}` |
 | `brief`, `beats` | Plan visual: universo del vídeo y qué se ve desde qué palabra |
+| `labels` | Rótulos en pantalla (tipo, texto, palabra en la que empiezan, foto) |
 | `visuals`, `visual_extras`, `montage` | `beat_id →` visual elegido (+ los extra de planos largos) y lo que usa `assemble` |
 | `video_path` | El `.mp4` final |
 
@@ -389,7 +408,8 @@ Claves principales:
 
 ```
 llm_video_generator/
-├── README_proyecto_ai_2.md
+├── README.md
+├── ARQUITECTURA.md              # el grafo en detalle
 ├── pyproject.toml / uv.lock
 ├── config.yaml                  # todo lo que no es una clave
 ├── .env.example                 # OPENROUTER_API_KEY, PEXELS_API_KEY, PIXABAY_API_KEY, TAVILY_API_KEY...
@@ -403,7 +423,8 @@ llm_video_generator/
 │   ├── find_topics.py           # solo la lista de temas, sin empezar un vídeo
 │   ├── design_voice.py          # diseña la voz del canal (una vez)
 │   ├── prepare_upload.py        # run terminado -> carpeta lista para subir
-│   └── upload_youtube.py        # carpeta -> YouTube
+│   ├── upload_youtube.py        # carpeta -> YouTube
+│   └── compare_facts.py, compare_judge.py   # pruebas A/B de modelos (hechos, juez de imágenes)
 └── src/
     ├── graph/
     │   ├── build.py             # el grafo
@@ -411,17 +432,21 @@ llm_video_generator/
     │   ├── lengths.py           # palabras, escenas y secciones según el formato
     │   ├── script_files.py      # script.json / script.md
     │   ├── manual.py            # guion.md y marcas [archivo]
+    │   ├── intros.py            # las 5 formas de presentación de los vídeos largos
     │   ├── montage.py           # <run>/montaje/
+    │   ├── onscreen.py          # dibuja los rótulos y retratos
     │   ├── subtitles.py         # subtítulos ASS y líneas del SRT
     │   └── nodes/               # un módulo por nodo (topics, research, angles, outline, deep_research,
     │                            #   write_script, review_script, manual_script, unload_llm, voice,
-    │                            #   align, brief, beats, visuals, review_visuals, assemble)
+    │                            #   align, brief, beats, labels, visuals, review_visuals, assemble)
     ├── prompts/                 # un .md por nodo con LLM; {{canal}} y {{temas}} salen de config.yaml
     ├── services/
     │   ├── llm.py, llm_hub.py   # modelo por nodo (OpenRouter / LM Studio), respaldo, descarga de VRAM
+    │   ├── costs.py             # <run>/costes.md
     │   ├── topics.py            # feeds + registro de temas
     │   ├── articles.py          # descarga y limpia artículos (trafilatura)
     │   ├── wikipedia.py
+    │   ├── portraits.py         # fotos de personas (Wikidata + Commons)
     │   ├── stock.py             # Pexels, Pixabay, NASA, Wikimedia
     │   ├── contact_sheet.py     # cuadrícula de candidatos para el juez
     │   ├── comfy.py             # ComfyUI (Z-Image)
@@ -452,9 +477,10 @@ Todo está en `config.yaml`, comentado. Las claves van en el `.env`. Resumen de 
 | `align` | Modelo de Whisper |
 | `visuals` | Fuentes por tipo de plano, duración de los planos, umbral del juez, generador (`comfy` / `openrouter`), estilo |
 | `comfy` | URL y modelos de Z-Image en ComfyUI |
-| `video` | Resolución, duración, escenas y secciones por formato; subtítulos, transiciones, música, 2.5D, codificador |
+| `video` | Resolución, duración, escenas y secciones por formato; subtítulos, transiciones, rótulos y retratos (`labels`), música, 2.5D, codificador |
 | `research` | Búsquedas, artículos, `skip_domains`, investigación por secciones (`deep`) |
 | `topics` | Feeds, días, candidatos, `reserve_days` |
+| `script` | `whole_max_words`: hasta cuántas palabras se escribe el guion entero en una llamada |
 | `review` | `max_revisions` del revisor del guion |
 | `youtube` | Carpetas, credenciales, privacidad, categoría (28 = Ciencia y tecnología) |
 
@@ -516,6 +542,7 @@ python scripts/run_pipeline.py --resume 20261013-025807
 python scripts/run_pipeline.py --resume <run_id> --redo voice       # narración cambiada en script.json
 python scripts/run_pipeline.py --resume <run_id> --redo brief       # brief.json editado
 python scripts/run_pipeline.py --resume <run_id> --redo beats       # beats.json editado (o borrado: nuevos)
+python scripts/run_pipeline.py --resume <run_id> --redo labels      # rotulos.json editado (o borrado: nuevos)
 python scripts/run_pipeline.py --resume <run_id> --redo visuals     # elegir otra vez (respeta tus archivos de montaje/)
 python scripts/run_pipeline.py --resume <run_id> --redo assemble    # volver a montar con lo que hay en montaje/
 
