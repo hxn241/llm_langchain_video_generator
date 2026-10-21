@@ -24,9 +24,12 @@
   vaya nadie". It is not narrated: <run>/plan_guion.md, to read next to script.md.
 - What a rewrite was asked (your reason, the reviewer's notes) goes to the state (script_requests):
   review_script checks it was done.
+- Long videos present themselves right after the hook, in one of five forms that rotate from
+  video to video (graph/intros.py): the request says which.
 """
 import json
 
+from graph import intros
 from graph.lengths import length_problems, length_targets, planned_targets, section_targets
 from graph.nodes.align import normalize
 from graph.script_files import ROLE_LABELS, TYPE_LABELS
@@ -67,8 +70,9 @@ def length_line(targets):
             f"{targets['min_words']} y {targets['max_words']} palabras de narración (objetivo: {targets['words']}).")
 
 
-def script_request(state, outline, targets, facts, video_format, previous=None, feedback=None):
-    """The whole script in one call (shorts, and long videos up to script.whole_max_words)."""
+def script_request(state, outline, targets, facts, video_format, previous=None, feedback=None, intro=None):
+    """The whole script in one call (shorts, and long videos up to script.whole_max_words).
+    intro: a long video's presentation form (graph/intros.py)."""
     angle = state.get("angle") or {}
     plan = "\n".join(f"{n}. [{ROLE_LABELS[s.role]}] {s.title} (~{s.words} palabras): {s.goal} Emoción: {s.emotion}."
                      + (f" Hechos: {', '.join(map(str, s.facts))}." if s.facts else "")
@@ -83,6 +87,8 @@ def script_request(state, outline, targets, facts, video_format, previous=None, 
         parts.append("Es un VÍDEO LARGO: aplica también las técnicas de \"Vídeos largos\". Cada sección, con las "
                      "palabras que le da el esquema. Lo que ya ha dicho una sección no lo repite otra: ni los "
                      "datos ni las ideas.")
+    if intro:
+        parts += intros.request_lines(intro)
     parts += [length_line(targets), "", "# Hechos", fact_lines(facts, used)]
     if previous:
         sections = sorted({s.section for s in previous})
@@ -98,8 +104,8 @@ def script_request(state, outline, targets, facts, video_format, previous=None, 
 
 
 def section_request(state, outline, number, targets, facts, video_format, before=None,
-                    previous=None, feedback=None, opening=None):
-    """One section (long videos)."""
+                    previous=None, feedback=None, opening=None, intro=None):
+    """One section (long videos). intro: the presentation form, for the first section."""
     section = outline.sections[number - 1]
     total = len(outline.sections)
     plan = "\n".join(f"{n}. [{ROLE_LABELS[s.role]}] {s.title}: {s.goal}"
@@ -119,6 +125,8 @@ def section_request(state, outline, number, targets, facts, video_format, before
         parts.append(f"Gancho propuesto (úsalo o mejóralo, sin salirte de los hechos): \"{angle['hook']}\"")
     if video_format == "long":
         parts.append("Es un VÍDEO LARGO: aplica también las técnicas de \"Vídeos largos\".")
+    if intro and number == 1:
+        parts += intros.request_lines(intro)
     parts += [length_line(targets), "", "# Hechos para esta sección", fact_lines(facts, used)]
     told = sorted({f for s in outline.sections[:number - 1] for f in s.facts} - set(section.facts))
     if told:
@@ -187,11 +195,11 @@ def make_write_script(hub, settings=None):
     write_whole = hub.chain(prompt, schema=ScriptDraft, node=NODE)
     write_section = hub.chain(prompt, schema=SectionPlanDraft, node=NODE)
 
-    def whole_script(state, outline, targets, facts, video_format, old, feedback, plans):
+    def whole_script(state, outline, targets, facts, video_format, old, feedback, plans, intro):
         """The whole script in one call -> ([scenes per section], warnings). plans[0]: its plan."""
         def write(previous, feedback):
             draft = write_whole.invoke({"text": script_request(state, outline, targets, facts, video_format,
-                                                               previous, feedback)})
+                                                               previous, feedback, intro)})
             plans[0] = draft.plan.strip()
             return draft.sections
 
@@ -212,7 +220,7 @@ def make_write_script(hub, settings=None):
             problems = check(drafts)
         return [d.scenes for d in drafts], problems
 
-    def by_sections(state, outline, targets, facts, video_format, old, reason, notes, plans):
+    def by_sections(state, outline, targets, facts, video_format, old, reason, notes, plans, intro):
         """Long videos: one call per section -> ([scenes per section], warnings). plans[n]: section n's plan."""
         sections, warnings = [], []
         for number, section in enumerate(outline.sections, start=1):
@@ -229,7 +237,7 @@ def make_write_script(hub, settings=None):
             def write(previous, feedback):
                 draft = write_section.invoke({"text": section_request(state, outline, number, goal, facts,
                                                                       video_format, before, previous, feedback,
-                                                                      opening)})
+                                                                      opening, intro)})
                 plans[number] = draft.plan.strip()
                 return draft.scenes
 
@@ -259,11 +267,17 @@ def make_write_script(hub, settings=None):
         whole = (video_format == "short"
                  or targets["words"] <= (settings.get("script") or {}).get("whole_max_words", 1200))
 
+        # a long video presents itself after the hook, each time in another form (graph/intros.py)
+        intro = intros.form_for(state["run_id"]) if video_format == "long" and state.get("run_id") else None
+        if intro and not old:
+            print(f"  · write_script: presentación \"{intro['name']}\" tras el gancho")
+
         if whole:
             sections, warnings = whole_script(state, outline, targets, facts, video_format, old,
-                                              requests or None, plans)
+                                              requests or None, plans, intro)
         else:
-            sections, warnings = by_sections(state, outline, targets, facts, video_format, old, reason, notes, plans)
+            sections, warnings = by_sections(state, outline, targets, facts, video_format, old, reason, notes,
+                                             plans, intro)
         script = Script.from_sections(outline.title, sections, [s["url"] for s in state.get("sources", [])])
         if not whole:                                   # a whole script was already checked as a whole
             warnings += length_problems(script.word_count(), len(script.scenes), targets, "El vídeo")
