@@ -19,7 +19,9 @@ For each beat (graph/nodes/beats.py: what must be seen, from which word):
 3. Beats without a good candidate: their prompt is generated (visuals.generator): with a paid
    model through OpenRouter (services/image_api.py) or, locally, with Z-Image Turbo in ComfyUI
    (the LLM is unloaded first). If OpenRouter fails, the rest go to ComfyUI. Same prompt and
-   settings -> the file is reused, not regenerated.
+   settings -> the file is reused, not regenerated. The vision model then looks at each one
+   (prompts/generated_check.md: deformities, text, what is said); a rejected one is made again
+   with another seed (visuals.check_generated).
 
 Long beats (visuals.photo_max_seconds: only long videos; shorts have no limit): a beat longer
 than that is judged first among its VIDEOS only; if one is good it fills the beat. Otherwise a
@@ -35,14 +37,18 @@ which is what assemble uses after the review_visuals pause.
 To add a source: a function (beat, orientation, options) -> candidates, in SOURCES.
 """
 import hashlib
+import io
 import itertools
 import json
 import math
 import re
+from types import SimpleNamespace
+
+from PIL import Image
 
 from graph import manual, montage
 from graph.nodes.beats import plain
-from graph.state import Script, VisualChoice
+from graph.state import GeneratedCheck, Script, VisualChoice
 from prompts import load_prompt
 from services import comfy, contact_sheet, costs, image_api, stock, workers
 from services.settings import load_settings, runs_dir
@@ -58,6 +64,17 @@ GRAPHIC_WORDS = {"chart", "charts", "graph", "graphs", "graphic", "infographic",
                  "concept", "illustration", "animation", "3d", "render", "cartoon", "vector", "logo"}
 # ...except in a visualization shot (an atom, a magnetic field): there a 3D animation is what is wanted
 VISUALIZATION_WORDS = {"animation", "3d", "render"}
+RENDERED = {"visualization", "cutaway"}       # registers (beats.json: look) where a render is what is wanted
+# What the judge is told about each register (photo: everything else)
+LOOK_TEXT = {
+    "visualization": "VISUALIZACIÓN CIENTÍFICA (lo que se nombra no se puede fotografiar: vale un render o una "
+                     "animación fotorrealista de eso mismo)",
+    "cutaway": "VISTA POR DENTRO (corte, sección o carcasa transparente de algo real: vale un render fotorrealista "
+               "o una foto real que enseñe su interior)",
+    "analogy": "LA COMPARACIÓN del narrador (lo que se ve es lo comparado, no el tema del vídeo: foto o vídeo real)",
+    "archive": "ESCENA DE ÉPOCA (foto o vídeo de archivo de esos años, o con su aspecto; nada moderno)",
+}
+GENERATED_RETRIES = 2         # a generated image the judge rejects is made again this many times (another seed)
 SEARCH_VERSION = 3            # part of the cache key: bump it when what a search returns changes
                               # (3: candidates carry their source's caption, for the judge)
 # A long beat's extra generated images: the same prompt with another framing, so they differ
@@ -71,7 +88,7 @@ def queries_of(beat):
     """The beat's stock searches, most concrete first (beats.json made before "queries": one "query"),
     without those that would bring graphics."""
     queries = [q for q in beat.get("queries") or [beat.get("query", "")] if q.strip()]
-    banned = GRAPHIC_WORDS - VISUALIZATION_WORDS if beat.get("look") == "visualization" else GRAPHIC_WORDS
+    banned = GRAPHIC_WORDS - VISUALIZATION_WORDS if beat.get("look") in RENDERED else GRAPHIC_WORDS
     return [q for q in queries if not banned & set(q.lower().replace("-", " ").split())]
 
 
@@ -108,12 +125,15 @@ SOURCES = {"stock": provider_candidates("stock", None),           # visuals.stoc
            "wikimedia": provider_candidates("wikimedia", ["wikimedia"])}
 
 
-def gather(beat, orientation, options, folder, cache):
-    """Candidates of every source of the beat's kind, with their thumbnail on disk."""
+def gather(beat, orientation, options, folder, cache, space=False):
+    """Candidates of every source of the beat's kind, with their thumbnail on disk. NASA only in a video
+    about space (brief: space): elsewhere its photos took the places of stock ("dry floor" -> Mars)."""
     if not queries_of(beat):
         return []
     per_source = []
     for name in options.get("sources", {}).get(beat["kind"], []):
+        if name == "nasa" and not space:
+            continue
         try:
             per_source.append(SOURCES[name](beat, orientation, options, cache))
         except Exception as e:                                   # one source failing does not stop the rest
@@ -148,9 +168,7 @@ def choice_text(beat, scene, candidates, brief=None):
             f"Fragmento que se está diciendo mientras se ve la imagen: \"{beat['text']}\"\n"
             + (f"La idea que cuenta: {beat['idea']}\n" if beat.get("idea") else "")
             + f"Qué debería verse: {beat['subject']}\n"
-            + ("Tipo de plano: VISUALIZACIÓN CIENTÍFICA (lo que se nombra no se puede fotografiar: vale un render o "
-               "una animación fotorrealista de eso mismo)\n" if beat.get("look") == "visualization" else
-               "Tipo de plano: FOTO o VÍDEO REAL\n")
+            + f"Tipo de plano: {LOOK_TEXT.get(beat.get('look'), 'FOTO o VÍDEO REAL')}\n"
             + (f"Tiene que verse: {', '.join(beat['must_show'])}\n" if beat.get("must_show") else "")
             + (f"NO debe verse: {', '.join(avoid)}\n" if avoid else "")
             + captions_text(candidates)
@@ -202,6 +220,19 @@ def found_visual(picked, choice, path):
             **({"duration": picked["duration"]} if picked["kind"] == "video" else {})}
 
 
+def reused(old, beat, pool):
+    """The judge's picks for this beat in an earlier try of the node (choices.json; 2026-10-25: a
+    crash while generating judged everything again) -> the candidates again, [] if nothing fitted.
+    None if the beat changed or a pick is no longer in its pool: then it is judged again."""
+    if not old or old.get("text") != beat["text"] or old.get("subject") != beat["subject"]:
+        return None
+    by_url = {c["page_url"]: c for c in pool}
+    urls = [old["picked"], *(e["picked"] for e in old.get("extras", []))] if old.get("used") else []
+    if any(u not in by_url for u in urls):
+        return None
+    return [by_url[u] for u in urls]
+
+
 def parts_of(beat, photo_max):
     """How many visuals a beat needs when it is not a video: 1, or more if a photo would stay
     longer than photo_max seconds (long videos only)."""
@@ -233,22 +264,25 @@ def seed_for(run_id, beat_id):
     return int(hashlib.md5(f"{run_id}-{beat_id}".encode()).hexdigest()[:8], 16)
 
 
-def generate(beats, run_id, folder, width, height, settings):
+def generate(beats, run_id, folder, width, height, settings, attempt=0):
     """The beats without a good candidate -> {beat id: generated visual}. visuals.generator:
     openrouter (paid, visuals.generate_model) or comfy (Z-Image, local). If OpenRouter fails (no
     credit, an error...), the rest go to ComfyUI. Same prompt and settings -> the file is reused.
     A long beat's extra image comes as the beat with "slot" (its key in the result: (id, n)) and
-    "suffix" (b, c...: in its file name and seed)."""
+    "suffix" (b, c...: in its file name and seed). attempt > 0: another try of an image the judge
+    rejected (another seed, another file)."""
     options = settings["visuals"]
     model, resolution = options.get("generate_model"), options.get("generate_resolution")
     paid = options.get("generator", "comfy") == "openrouter"
-    out, spent, comfy_on = {}, 0.0, False
+    out, spent, comfy_on, failed = {}, 0.0, False, ""
+    again = f"-{attempt}" if attempt else ""
     try:
         for n, b in enumerate(beats, start=1):
             path = provider = None
             name = f"beat_{b['id']:03d}{b.get('suffix', '')}"
             if paid:
-                key = hashlib.md5(f"{b['prompt']}|{model}|{resolution}|{width}x{height}".encode()).hexdigest()[:8]
+                key = hashlib.md5(f"{b['prompt']}|{model}|{resolution}|{width}x{height}{again}"
+                                  .encode()).hexdigest()[:8]
                 path = next(folder.glob(f"{name}_{key}.*"), None)
                 provider = model
                 if not path:
@@ -257,17 +291,19 @@ def generate(beats, run_id, folder, width, height, settings):
                                                         width, height, model, resolution)
                         spent += cost
                         costs.record("visuals_images", model, cost=cost)
-                    except Exception as e:                    # no credit, rate limit...: the rest locally
+                    except Exception as e:                    # no credit, still down after retries: the rest locally
+                        failed = f"{model} failed ({str(e)[:200]}) and "
                         print(f"  ⚠️  visuals: {model} falló ({str(e)[:200]}); el resto se genera con ComfyUI")
                         paid, path = False, None
             if not path:
                 if not comfy_on:
                     if not comfy.running(settings):
-                        raise RuntimeError(f"{len(beats) - n + 1} fragments must be generated and ComfyUI is not "
-                                           "running. Start it:\n  cd C:\\Users\\hexen\\ComfyUI; "
+                        raise RuntimeError(f"{failed}{len(beats) - n + 1} fragments must be generated and ComfyUI is "
+                                           "not running. Start it (the images already made are reused):\n"
+                                           "  cd C:\\Users\\hexen\\ComfyUI; "
                                            ".venv\\Scripts\\python.exe main.py --listen 127.0.0.1 --port 8188")
                     comfy_on = True
-                seed = seed_for(run_id, f"{b['id']}{b.get('suffix', '')}" if b.get("suffix") else b["id"])
+                seed = seed_for(run_id, f"{b['id']}{b.get('suffix', '')}{again}")
                 key = hashlib.md5(f"{b['prompt']}|{seed}|{width}x{height}|{settings.get('comfy', {})}"
                                   .encode()).hexdigest()[:8]
                 path, provider = folder / f"{name}_{key}.png", "z-image-turbo"
@@ -283,6 +319,60 @@ def generate(beats, run_id, folder, width, height, settings):
         if spent:
             print(f"  · visuals: imágenes generadas en OpenRouter: {spent:.2f} $")
     return out
+
+
+def preview(path, long_side=1024):
+    """A generated image as a JPEG small enough for the judge, big enough to count heads and legs."""
+    image = Image.open(path).convert("RGB")
+    image.thumbnail((long_side, long_side))
+    data = io.BytesIO()
+    image.save(data, "JPEG", quality=88)
+    return data.getvalue()
+
+
+def check_text(beat, scene, brief=None):
+    """What the judge of a generated image is told (prompts/generated_check.md)."""
+    avoid = list(dict.fromkeys(beat.get("must_not_show", []) + (brief or {}).get("avoid", [])))
+    return (f"Narración de la escena: \"{scene.narration}\"\n"
+            f"Fragmento que se dice mientras se ve: \"{beat['text']}\"\n"
+            f"Qué debería verse: {beat['subject']}\n"
+            f"Tipo de plano: {LOOK_TEXT.get(beat.get('look'), 'FOTO REAL')}\n"
+            + (f"Tiene que verse: {', '.join(beat['must_show'])}\n" if beat.get("must_show") else "")
+            + (f"NO debe verse: {', '.join(avoid)}\n" if avoid else "")
+            + f"Lo que se le pidió al generador: {beat['prompt']}\n"
+            "¿Se puede usar esta imagen en el vídeo?")
+
+
+def review_generated(hub, made, planned, scenes, brief, generate_again):
+    """Each generated image seen by the vision model (prompts/generated_check.md): one with a deformity,
+    text or that does not show what is said is made again with another seed, up to GENERATED_RETRIES
+    times (2026-10-23: cockroaches with two heads went straight into the video). One still wrong keeps
+    its problems in "check" (lista.md shows them, to change at the review_visuals pause)."""
+    by_slot = {b.get("slot", b["id"]): b for b in planned}
+    pending = made
+    for attempt in range(GENERATED_RETRIES + 1):
+        failed = []
+        for slot, visual in pending.items():
+            b = by_slot[slot]
+            try:
+                verdict = hub.look(load_prompt("generated_check"), check_text(b, scenes[b["scene"]], brief),
+                                   [preview(visual["path"])], schema=GeneratedCheck, node=NODE)
+            except Exception as e:                # the judge down (429...): the image stays, marked to look at
+                print(f"  ⚠️  visuals: no se pudo revisar la generada {b['id']}{b.get('suffix', '')} ({str(e)[:120]})")
+                made[slot] = dict(visual, check=["sin revisar: el juez falló, mírala tú"])
+                continue
+            made[slot] = visual if verdict.usable else dict(visual, check=verdict.problems or [verdict.seen])
+            if not verdict.usable:
+                failed.append(b)
+                print(f"  · visuals: generada {b['id']}{b.get('suffix', '')} rechazada "
+                      f"({'; '.join(verdict.problems)[:160]})" + (" -> otra" if attempt < GENERATED_RETRIES else ""))
+        if not failed or attempt == GENERATED_RETRIES:
+            break
+        pending = generate_again(failed, attempt + 1)
+    wrong = [slot for slot, v in made.items() if v.get("check")]
+    if wrong:
+        print(f"  ⚠️  visuals: {len(wrong)} generadas siguen con fallos: revísalas en montaje/lista.md")
+    return made
 
 
 # ------------------------------------------------------------------- node
@@ -318,8 +408,9 @@ def make_visuals(hub, settings=None):
         # visualization): with visuals.direct_generate those go straight to step 3, not searched
         direct = options.get("direct_generate", True)
         try:
+            space = (state.get("brief") or {}).get("space", False)
             candidates = {b["id"]: [] if b["kind"] == "manual" or (direct and b.get("generate")) else
-                          gather(b, orientation, options, folder / "thumbs", cache) for b in beats}
+                          gather(b, orientation, options, folder / "thumbs", cache, space) for b in beats}
         finally:
             cache_file.write_text(json.dumps({k: v for k, v in cache.items() if v}, ensure_ascii=False),
                                   encoding="utf-8")       # empty results are not kept: maybe a provider failed
@@ -342,10 +433,28 @@ def make_visuals(hub, settings=None):
         photo_max = (options.get("photo_max_seconds") or {}).get(video_format)   # long videos only
         brief, aspect = state.get("brief"), width / height
         used, log, extras = set(), {}, {}
+        # the picks of an earlier try are kept (delete choices.json to have everything judged again)
+        choices_file = folder / "choices.json"
+        previous = json.loads(choices_file.read_text(encoding="utf-8")) if choices_file.exists() else {}
         for b in with_candidates:
             pool = sorted((c for c in candidates[b["id"]] if c["key"] not in used and c["similarity"] > -1),
                           key=lambda c: -c["similarity"])
             if not pool:
+                continue
+            old = previous.get(str(b["id"]))
+            again = reused(old, b, pool)
+            if again is not None:
+                log[b["id"]] = old
+                scores = [old["score"], *(e["score"] for e in old.get("extras", []))]
+                for k, (c, score) in enumerate(zip(again, scores)):
+                    used.add(c["key"])
+                    visual = found_visual(c, SimpleNamespace(score=score), stock.download(c, width, height, folder))
+                    if k:
+                        extras.setdefault(b["id"], []).append(visual)
+                    else:
+                        chosen[b["id"]] = visual
+                print(f"  · visuals: fragmento {b['id']} ({b['kind']}) -> como antes: "
+                      + (f"{again[0]['source']} {again[0]['kind']} · {old['score']}/10" if again else "se genera"))
                 continue
             parts = parts_of(b, photo_max)
             picked, choice, good = pick(hub, b, scenes[b["scene"]], pool, aspect, brief, options,
@@ -376,7 +485,7 @@ def make_visuals(hub, settings=None):
                 log[b["id"]].setdefault("extras", []).append({"picked": more["page_url"], "score": more_choice.score})
                 print(f"  · visuals: fragmento {b['id']}{LETTERS[k - 1]} -> {more['source']} {more['kind']} · "
                       f"{more_choice.score}/10")
-        (folder / "choices.json").write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
+        choices_file.write_text(json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8")
         write_credits(runs_dir(run_id), chosen, extras)
         hub.unload_local_models(verbose=False)                  # the LLM out: VRAM for Z-Image
 
@@ -391,6 +500,10 @@ def make_visuals(hub, settings=None):
                      for k in range(1 + have, parts_of(b, photo_max))]
         if rest:
             made = generate(rest, run_id, folder, width, height, settings)
+            if options.get("check_generated", True):
+                made = review_generated(hub, made, rest, scenes, brief,
+                                        lambda failed, attempt: generate(failed, run_id, folder, width, height,
+                                                                         settings, attempt))
             for slot, visual in made.items():
                 if isinstance(slot, tuple):
                     extras.setdefault(slot[0], []).append(visual)

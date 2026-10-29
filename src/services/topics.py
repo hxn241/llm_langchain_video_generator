@@ -32,8 +32,9 @@ from urllib.parse import urljoin
 
 import feedparser
 import requests
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from graph.state import Draft
 from llmkit import config
 from prompts import load_prompt
 from services.articles import HEADERS, blocked
@@ -47,7 +48,7 @@ TAG = re.compile(r"<[^>]+>")
 STATUS_LABELS = {"propuesto": "propuesto", "en_curso": "en curso", "subido": "subido", "descartado": "descartado"}
 
 
-class TopicCandidate(BaseModel):
+class TopicCandidate(Draft):
     topic: str = Field(description="El tema del vídeo en una frase clara, en español (lo que va en --topic)")
     entries: list[int] = Field(min_length=1, max_length=6,
                                description="Números de las entradas que cuentan esta historia (la mejor fuente primero)")
@@ -64,7 +65,7 @@ class TopicCandidate(BaseModel):
     why: str = Field(description="Por qué esa nota, en una frase: lo bueno y lo que falla")
 
 
-class TopicsDraft(BaseModel):
+class TopicsDraft(Draft):
     candidates: list[TopicCandidate] = Field(max_length=20, description="Los mejores temas, de mayor a menor nota")
 
 

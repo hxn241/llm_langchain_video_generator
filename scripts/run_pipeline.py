@@ -48,7 +48,9 @@ In a manual run (yours at pause 3), --redo reads guion.md again: replaced files 
 -> --redo beats; changed narration -> --redo voice.
 --redo (voice | align | brief | beats | labels | visuals | assemble) runs that node again and the ones
 after it, also on a finished run (e.g. one made before that node existed). brief.json, beats.json and
-rotulos.json are read again if they exist (your edits count): delete them for new ones. A brief.json
+rotulos.json are read again if they exist (your edits count): delete them for new ones. visuals/choices.json
+too: the stock already picked is kept and only the rest is generated (delete it to judge everything
+again; the generated images are reused while their prompt does not change). A brief.json
 newer than beats.json (new or edited) makes new beats. Only the labels (rótulos) again, keeping the
 images: delete rotulos.json and --redo labels --keep-visuals. Only edited their texts: --redo assemble.
 

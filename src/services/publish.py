@@ -5,7 +5,8 @@ it only reads what the run left (its files and its saved state) and never runs t
         video.mp4         the newest assembled video of the run (a copy)
         metadata.json     title, tags, category, privacy, publish_at, AI content... (edit it)
         descripcion.md    the description (edit it): summary, chapters (long videos), sources,
-                          credits of the stock images (Wikimedia's CC BY requires them), hashtags
+                          the music's credits (music_credits: from data/musica/), credits of the
+                          stock images (Wikimedia's CC BY requires them), hashtags
         miniatura.jpg     1280x720: an image of the video (montaje/01 by default) + 2-4 big words
         subtitulos.srt    from the align node's word times: the exact narration, already timed
 
@@ -14,18 +15,19 @@ config.yaml, one call: prompts/publish.md); the rest is put together here from t
 AI content ("synthetic_media") is true when montaje/ has a generated image or a file that does
 not come from stock (yours: unknown, so it is marked; set it to false if it is not AI).
 """
+import hashlib
 import json
 import shutil
 import sqlite3
 from pathlib import Path
 
 from langgraph.checkpoint.sqlite import SqliteSaver
-from PIL import Image, ImageDraw, ImageFont, ImageOps
-from pydantic import BaseModel, Field
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
+from pydantic import Field
 
 from graph import manual, montage
 from graph.nodes.assemble import scene_frames
-from graph.state import Script
+from graph.state import Draft, Script
 from graph.subtitles import lines as subtitle_lines
 from llmkit import config
 from prompts import load_prompt
@@ -34,6 +36,13 @@ from services.settings import load_settings, runs_dir
 
 NODE = "publish"
 THUMB_SIZE = (1280, 720)
+# long videos' thumbnail (side_thumbnail): text on the quieter half over a dark gradient
+THUMB_TEXT_WIDTH = 0.5            # the text takes at most this share of the width
+THUMB_SHADE = 0.65                # the gradient covers this share of the width...
+THUMB_SHADE_ALPHA = 190           # ... and is this dark (0-255) at the edge
+THUMB_HIGHLIGHT = "#FFD400"       # the key word
+THUMB_MAX_FONT = 200              # px: one short word must not fill the whole image
+THUMB_CONTRAST, THUMB_COLOR = 1.08, 1.12
 DESCRIPTION_MAX = 5000            # YouTube's limit
 TITLE_MAX = 100
 SUBTITLE_WORDS = 7                # at most this many words per subtitle line
@@ -42,12 +51,13 @@ MIN_CHAPTER_SECONDS = 10          # YouTube ignores chapters shorter than this (
 NOT_VIDEOS = {"video_only.mp4"}   # intermediate files of assemble
 
 
-class PublishDraft(BaseModel):
+class PublishDraft(Draft):
     title: str = Field(description="Título del vídeo, máximo 70 caracteres, sin clickbait engañoso")
     summary: str = Field(description="2-3 frases para la descripción: de qué va y qué se aprende")
     tags: list[str] = Field(min_length=3, max_length=20, description="8-15 etiquetas cortas, sin #")
     hashtags: list[str] = Field(min_length=1, max_length=3, description="2-3 hashtags que empiezan por #")
-    thumbnail_text: str = Field(description="2-4 palabras en MAYÚSCULAS para la miniatura")
+    thumbnail_text: str = Field(description="2-3 palabras en MAYÚSCULAS para la miniatura, que no repiten el título")
+    thumbnail_highlight: str = Field(default="", description="La palabra de thumbnail_text que va en amarillo")
 
 
 # ------------------------------------------------------------------ the run
@@ -145,9 +155,10 @@ def source_line(s):
     return f"- {head + ': ' if head else ''}{s.get('title') or ''} {s['url']}".replace("  ", " ")
 
 
-def description(draft, chapter_lines, sources, credit_list, synthetic):
-    """Summary, chapters, sources, credits, AI notice and hashtags. Over YouTube's 5,000
-    characters, the last credits are left out (they also stay in the run's creditos.txt)."""
+def description(draft, chapter_lines, sources, credit_list, synthetic, music_lines=None):
+    """Summary, chapters, sources, music credits (as they are: the licence forbids changing them),
+    image credits, AI notice and hashtags. Over YouTube's 5,000 characters, the last image credits
+    are left out (they also stay in the run's creditos.txt); the music's never."""
     credits = credit_list
     def build(credit_lines):
         parts = [draft.summary.strip()]
@@ -155,6 +166,8 @@ def description(draft, chapter_lines, sources, credit_list, synthetic):
             parts += ["", *chapter_lines]
         if sources:
             parts += ["", "Fuentes:"] + [source_line(s) for s in sources]
+        if music_lines:
+            parts += ["", *music_lines]
         if credit_lines:
             parts += ["", "Imágenes y vídeos:"] + [f"- {c}" for c in credit_lines]
         if synthetic:
@@ -183,6 +196,29 @@ def credits(run_folder, state):
     return list(dict.fromkeys(lines))
 
 
+def music_credits(run_folder, library):
+    """The credits of the run's music (montaje/musica.mp3), line by line; [] if it has none.
+    From montaje/musica.txt if you left one; otherwise from the music library (`library`,
+    youtube.music_dir): the track there with the same bytes, and its .txt next to it
+    (data/musica/timeless.mp3 + timeless.txt). A video with music and no credits is not prepared:
+    the free licences (CC BY...) require them, and without them the video can be claimed."""
+    music = montage.music_of(run_folder)
+    if not music:
+        return []
+    own = music.with_suffix(".txt")
+    if not own.exists():
+        digest = hashlib.md5(music.read_bytes()).hexdigest()
+        own = next((p.with_suffix(".txt") for p in sorted(Path(library).glob("*"))
+                    if p.suffix.lower() in montage.AUDIO_EXTENSIONS and hashlib.md5(p.read_bytes()).hexdigest() == digest), None)
+    if not own or not own.exists():
+        raise SystemExit(f"{music.name} no tiene créditos: déjalos en {music.with_suffix('.txt')} (o guarda la pista "
+                         f"y su .txt con el mismo nombre en {library}). Sin ellos te pueden reclamar el vídeo.")
+    lines = [line.rstrip() for line in own.read_text(encoding="utf-8").strip().splitlines()]
+    if any("<<" in line for line in lines):
+        raise SystemExit(f"Completa los créditos de la música en {own} (hay un hueco <<...>>)")
+    return lines
+
+
 def thumbnail_source(run_folder, work_folder, number=None):
     """montaje/<number> (01 by default: the hook) -> a still image path (a frame if it is a video,
     without the black bars some clips have burned in)."""
@@ -204,9 +240,14 @@ def thumbnail_source(run_folder, work_folder, number=None):
     return first
 
 
-def thumbnail(image_path, text, font_path, dst):
-    """1280x720: the image filling the frame + the text, big, white with a black outline, at the bottom."""
+def thumbnail(image_path, text, font_path, dst, highlight="", side=False):
+    """1280x720: the image filling the frame + the text, big, white with a black outline.
+    side=False (shorts): centred at the bottom. side=True (long videos): on the half of the image
+    with less detail, over a dark gradient, so it does not cover the subject; `highlight` (a word
+    of the text) in yellow."""
     image = ImageOps.fit(Image.open(image_path).convert("RGB"), THUMB_SIZE, Image.Resampling.LANCZOS)
+    if side:
+        return side_thumbnail(image, text, font_path, dst, highlight)
     draw = ImageDraw.Draw(image)
     width, height = THUMB_SIZE
     words, size = text.upper().split(), round(height * 0.2)
@@ -226,6 +267,81 @@ def thumbnail(image_path, text, font_path, dst):
         y += line_h
     image.save(dst, quality=92)
     return dst
+
+
+def quieter_side(image):
+    """"left" or "right": the half with less detail (fewer edges), where the text covers less."""
+    edges = image.convert("L").resize((128, 72)).filter(ImageFilter.FIND_EDGES)
+    left = sum(edges.crop((0, 0, 64, 72)).getdata())
+    right = sum(edges.crop((64, 0, 128, 72)).getdata())
+    return "left" if left <= right else "right"
+
+
+def _bare(word):
+    return word.strip("¿?¡!.,:;«»\"'").upper()
+
+
+def side_thumbnail(image, text, font_path, dst, highlight=""):
+    width, height = THUMB_SIZE
+    image = ImageEnhance.Color(ImageEnhance.Contrast(image).enhance(THUMB_CONTRAST)).enhance(THUMB_COLOR)
+    side = quieter_side(image)
+    # the dark gradient: strongest at the text's edge, gone past the middle
+    shade_w = round(width * THUMB_SHADE)
+    row = [round(THUMB_SHADE_ALPHA * (1 - x / shade_w) ** 1.5) for x in range(shade_w)]   # dark -> clear
+    ramp = Image.new("L", (shade_w, 1))
+    ramp.putdata(row if side == "left" else row[::-1])
+    shade = Image.new("L", (width, height), 0)
+    shade.paste(ramp.resize((shade_w, height)), (0 if side == "left" else width - shade_w, 0))
+    image = Image.composite(Image.new("RGB", image.size, "black"), image, shade)
+
+    draw = ImageDraw.Draw(image)
+    lines, size = text_layout(text.upper().split(), font_path, draw, width * THUMB_TEXT_WIDTH, height * 0.8)
+    font = ImageFont.truetype(str(font_path), size)
+    stroke, line_h, margin = max(4, size // 12), size * 1.08, width * 0.05
+    key = _bare(highlight) if highlight else ""
+    y = (height - line_h * len(lines)) / 2
+    space = draw.textlength(" ", font=font)
+    for line in lines:
+        w = draw.textlength(line, font=font)
+        x = margin if side == "left" else width - margin - w
+        for word in line.split():
+            colour = THUMB_HIGHLIGHT if key and _bare(word) == key else "white"
+            draw.text((x, y), word, font=font, fill=colour, stroke_width=stroke, stroke_fill="black")
+            x += draw.textlength(word, font=font) + space
+        y += line_h
+    image.save(dst, quality=92)
+    return dst
+
+
+def splits(words, n):
+    """Every way of cutting the words, in order, into n non-empty lines."""
+    if n == 1:
+        yield [" ".join(words)]
+        return
+    for cut in range(1, len(words) - n + 2):
+        for rest in splits(words[cut:], n - 1):
+            yield [" ".join(words[:cut])] + rest
+
+
+def text_layout(words, font_path, draw, max_width, max_height, max_lines=3):
+    """(lines, font size): of every way of putting the words in 1-3 lines, the one with the biggest
+    letters. A short word (1-3 letters: "DE", "UN", "8") never takes a line alone, and fewer lines
+    win when their letters are at least 75 % as big: a block of 1-2 lines reads at a glance."""
+    reference = ImageFont.truetype(str(font_path), 100)
+    def biggest(lines):
+        widest = max(draw.textlength(l, font=reference) for l in lines)
+        return min(100 * max_width / widest, max_height / (1.08 * len(lines)), THUMB_MAX_FONT)
+    def lone_short(lines):
+        return any(" " not in l and len(_bare(l)) <= 3 for l in lines) and len(lines) > 1
+    best = []
+    for n in range(1, min(max_lines, len(words)) + 1):
+        options = [l for l in splits(words, n) if not lone_short(l)]
+        if options:
+            lines = max(options, key=biggest)
+            best.append((lines, biggest(lines)))
+    top = max(size for _, size in best)
+    lines, size = next((l, s) for l, s in best if s >= top * 0.75)
+    return lines, max(1, int(size))   # never wider than the box, even with an absurdly long word
 
 
 def wrap(words, font, draw, max_width):
@@ -259,6 +375,7 @@ def prepare(run_id, hub, thumb_number=None, force=False):
     state = run_state(run_id)
     script = Script.model_validate(state["script"])
     video = newest_video(run_folder)
+    music = music_credits(run_folder, config.BASE / options.get("music_dir", "data/musica"))   # before paying the LLM
     folder = config.BASE / options.get("ready_dir", "data/listo_para_subir") / video.stem
     if folder.exists() and not force:
         raise SystemExit(f"{folder} already exists: edit it, or delete it (or use --force) to prepare it again")
@@ -273,11 +390,11 @@ def prepare(run_id, hub, thumb_number=None, force=False):
     shutil.copy2(video, folder / "video.mp4")
     (folder / "descripcion.md").write_text(
         description(draft, chapters(state, starts) if long_video else [], state.get("sources", []),
-                    credits(run_folder, state), synthetic) + "\n", encoding="utf-8")
+                    credits(run_folder, state), synthetic, music) + "\n", encoding="utf-8")
     (folder / "subtitulos.srt").write_text(subtitles(state, starts), encoding="utf-8")
     source = thumbnail_source(run_folder, folder, thumb_number)
     thumb = thumbnail(source, draft.thumbnail_text, options.get("thumbnail_font", "C:/Windows/Fonts/ariblk.ttf"),
-                      folder / "miniatura.jpg") if source else None
+                      folder / "miniatura.jpg", highlight=draft.thumbnail_highlight, side=long_video) if source else None
     metadata = {
         "title": draft.title.strip()[:TITLE_MAX],
         "tags": draft.tags,
@@ -292,6 +409,7 @@ def prepare(run_id, hub, thumb_number=None, force=False):
         "description": "descripcion.md",
         "thumbnail": thumb.name if thumb else None,
         "thumbnail_text": draft.thumbnail_text,
+        "thumbnail_highlight": draft.thumbnail_highlight,
         "subtitles": "subtitulos.srt",
         "run_id": run_id,
         "source_video": str(video),

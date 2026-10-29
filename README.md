@@ -342,11 +342,12 @@ Más reglas:
   - `video.mp4`;
   - `metadata.json` (título, tags, privacidad, contenido sintético...);
   - `descripcion.md` (resumen, capítulos, fuentes, **créditos** de las imágenes, hashtags);
-  - `miniatura.jpg` (un plano del vídeo con 2–4 palabras grandes; `--thumb N` elige el plano);
+  - `miniatura.jpg` (un plano del vídeo con 2–3 palabras grandes que no repiten el título; `--thumb N` elige el plano). En los largos, el texto va en el lado de la imagen con menos detalle, sobre un degradado oscuro, con la palabra clave en amarillo; en los shorts, centrado abajo;
   - `subtitulos.srt`.
 
   Solo el título, el resumen, las etiquetas y el texto de la miniatura salen del modelo (`prompts/publish.md`). Edita lo que quieras antes de subir.
 - **`scripts/upload_youtube.py <carpeta>`** sube el vídeo, la miniatura y los subtítulos, y marca el contenido sintético. Después mueve la carpeta a `data/subidos/` con `youtube.json` y marca el tema como `subido` en el registro.
+- **`scripts/retention.py`** escribe `data/retencion/<fecha>.md` con todos los vídeos del canal: vistas, duración media vista, % medio, cuánta gente sigue a los 3, 10 y 30 s y al final, y las caídas más fuertes con la frase que sonaba (de los `subtitulos.srt` de `data/subidos/`). Necesita la "YouTube Analytics API" activada en el mismo proyecto de Google Cloud. Las impresiones, el CTR y el "se quedaron viendo" de los shorts no están en la API: exporta el CSV en YouTube Studio (Modo avanzado → Contenido → descargar) y déjalo, `.csv` o `.zip`, en `data/retencion/studio/`.
 
 ---
 
@@ -424,6 +425,7 @@ llm_video_generator/
 │   ├── design_voice.py          # diseña la voz del canal (una vez)
 │   ├── prepare_upload.py        # run terminado -> carpeta lista para subir
 │   ├── upload_youtube.py        # carpeta -> YouTube
+│   ├── retention.py             # retención de los vídeos del canal (YouTube Analytics + CSV de Studio)
 │   └── compare_facts.py, compare_judge.py   # pruebas A/B de modelos (hechos, juez de imágenes)
 └── src/
     ├── graph/
@@ -550,8 +552,10 @@ python scripts/run_pipeline.py --resume <run_id> --redo assemble    # volver a m
 python scripts/find_topics.py                  # --days 3 --top 5 · --no-llm (gratis) · --discard <id>
 
 # Publicar
+python scripts/publish_run.py --run <run_id>                 # prepara y sube en un paso (pregunta antes de subir)
 python scripts/prepare_upload.py --run <run_id>              # --thumb 3 · --force
 python scripts/upload_youtube.py data/listo_para_subir/<carpeta>   # --privacy unlisted
+python scripts/retention.py                                  # -> data/retencion/<fecha>.md
 ```
 
 `--yes` aprueba todas las pausas sin preguntar. Úsalo solo para pruebas.

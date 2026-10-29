@@ -15,10 +15,19 @@ FFMPEG = imageio_ffmpeg.get_ffmpeg_exe()
 SAMPLE_RATE = 48_000
 
 
-def ffmpeg(*args, cwd=None):
-    """Runs ffmpeg and returns its stderr (where ffmpeg prints its reports). Raises with the tail of the log."""
-    result = subprocess.run([FFMPEG, "-hide_banner", "-nostdin", "-y", *map(str, args)], cwd=cwd,
-                            capture_output=True, text=True, encoding="utf-8", errors="replace")
+class FFmpegHung(RuntimeError):
+    """ffmpeg went past its timeout (killed): 2026-10-24 the final pass of a long video froze with
+    h264_nvenc, no CPU and no error, and the run waited forever."""
+
+
+def ffmpeg(*args, cwd=None, timeout=None):
+    """Runs ffmpeg and returns its stderr (where ffmpeg prints its reports). Raises with the tail of the log;
+    FFmpegHung if it takes more than `timeout` seconds (it is killed)."""
+    try:
+        result = subprocess.run([FFMPEG, "-hide_banner", "-nostdin", "-y", *map(str, args)], cwd=cwd,
+                                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise FFmpegHung(f"ffmpeg did not finish in {timeout:.0f} s (killed)") from None
     if result.returncode != 0:
         raise RuntimeError(f"ffmpeg failed ({result.returncode}):\n{result.stderr[-1500:]}")
     return result.stderr
@@ -180,12 +189,16 @@ def loudness(src):
 def music_bed(src, seconds, dst, lufs, eq_db=-4, fade_in=2.0, fade_out=3.0):
     """Your music as the background of a video `seconds` long: looped (or cut) to that length,
     a dip of eq_db around 1-4 kHz (the voice's frequencies: it is heard but does not cover the
-    words), fades at both ends, and a FIXED gain to `lufs`: it never goes up or down with the voice."""
+    words), fades at both ends (0 = none: the track as it comes), and a FIXED gain to `lufs`: it never
+    goes up or down with the voice."""
     shaped = Path(dst).with_name(Path(dst).stem + ".shaped.wav")
     fade_out = min(fade_out, seconds / 2)
-    ffmpeg("-stream_loop", -1, "-i", src, "-t", round(seconds, 3), "-af",
-           f"equalizer=f=2000:t=o:w=2:g={eq_db},afade=t=in:d={fade_in},"
-           f"afade=t=out:st={seconds - fade_out:.3f}:d={fade_out}",
+    filters = [f"equalizer=f=2000:t=o:w=2:g={eq_db}"]
+    if fade_in > 0:
+        filters.append(f"afade=t=in:d={fade_in}")
+    if fade_out > 0:
+        filters.append(f"afade=t=out:st={seconds - fade_out:.3f}:d={fade_out}")
+    ffmpeg("-stream_loop", -1, "-i", src, "-t", round(seconds, 3), "-af", ",".join(filters),
            "-ar", SAMPLE_RATE, "-ac", 1, "-c:a", "pcm_s16le", shaped)
     gain = lufs - loudness(shaped)
     ffmpeg("-i", shaped, "-af", f"volume={gain:.2f}dB", "-c:a", "pcm_s16le", dst)

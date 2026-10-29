@@ -11,7 +11,7 @@ assembled; the topic without accents or symbols, e.g. 20261011_Google_lanza_su_p
      frame. If it is shorter than the beat it is slowed down
      (at most MAX_SLOWDOWN) and its last frame is held for the rest.
    - photo / generated image: a slow, subtle camera move (MOTIONS: zoom to the centre or to a
-     side, pans, tilts; a different one for each photo), made frame by frame at sub-pixel
+     side, pans, tilts; the one beats planned for the shot, never the same twice in a row), made frame by frame at sub-pixel
      positions (ffmpeg's zoompan jitters) and piped to ffmpeg. With video.parallax, 2.5D:
      a GPU worker (tts_worker/parallax_worker.py) estimates the photo's depth and moves the
      foreground a little more than the background; if it fails, the plain move (ken_burns).
@@ -62,6 +62,13 @@ MOTIONS = [
     {"name": "pan left", "z0": 1.06, "z1": 1.06, "x0": 0.8, "y0": 0, "x1": -0.8, "y1": 0},
     {"name": "zoom out up", "z0": 1 + ZOOM, "z1": 1.02, "x0": 0, "y0": -0.6, "x1": 0, "y1": 0},
 ]
+# beats chooses each shot's move (beats.json: motion) -> the moves above that make it. "static" barely
+# drifts: a still frame for a deadpan gag or a pause, without looking frozen.
+STATIC = {"name": "static", "z0": 1.04, "z1": 1.055, "x0": 0, "y0": 0, "x1": 0, "y1": 0}
+PLANNED_MOTIONS = {"zoom_in": ["zoom in", "zoom in left", "zoom in right"], "zoom_out": ["zoom out", "zoom out up"],
+                   "pan_left": ["pan left"], "pan_right": ["pan right"], "static": ["static"]}
+FINAL_PASS_MIN_SECONDS = 300     # the final pass is killed after max(this, video length x the next)
+FINAL_PASS_SECONDS_PER_SECOND = 3
 BACKGROUND = "0x14181F"     # kind "none"
 SEGMENT_QUALITY = 16        # intermediate segments: near lossless (they are encoded twice)
 MAX_NAME_CHARS = 80         # the topic part of the video's file name
@@ -92,6 +99,22 @@ def beat_frames(beats, scene_ids, frames, fps):
         cuts = [0] + [min(frames[sid], round(b["start"] * fps)) for b in scene_beats[1:]]
         ends = cuts[1:] + [frames[sid]]
         out += [(b, end - cut) for b, cut, end in zip(scene_beats, cuts, ends) if end > cut]
+    return out
+
+
+def photo_motions(timeline, photos):
+    """{shot index: camera move} for the photos: the one beats planned (motion), never the same as the
+    previous photo's (a beat split in 05 + 05b, or a repeated plan, takes another); without a plan, the
+    MOTIONS in turn."""
+    by_name = {m["name"]: m for m in [*MOTIONS, STATIC]}
+    out, last = {}, None
+    for k, n in enumerate(photos):
+        planned = str(timeline[n][0].get("motion") or "").strip().lower().replace(" ", "_").replace("-", "_")
+        names = PLANNED_MOTIONS.get(planned, [])
+        turn = MOTIONS[k % len(MOTIONS):] + MOTIONS[:k % len(MOTIONS)]
+        options = [by_name[x] for x in names[k % max(1, len(names)):] + names[:k % max(1, len(names))]] + turn
+        out[n] = next(m for m in options if m["name"] != last)
+        last = out[n]["name"]
     return out
 
 
@@ -267,7 +290,9 @@ def photo_overlays(photos, folder, work, fps, filters):
                                      border=border, fill="white")
         still = work / f"retrato_{n + 1:02d}.png"
         framed.save(still)
-        inputs += ["-loop", 1, "-framerate", fps, "-t", f"{p['end']:.3f}", "-i", still]
+        # endless, not "-t end": with two inputs that ended early ffmpeg 7.1 froze for good later on
+        # (2026-10-24, a 4:19 video stuck at 3:05). The final pass cuts the output at the video's length
+        inputs += ["-loop", 1, "-framerate", fps, "-i", still]
         s, e = p["start"], p["end"]
         chain.append(f"[{n + 2}:v]format=rgba,fade=t=in:st={s:.3f}:d={onscreen.FADE_IN}:alpha=1,"
                      f"fade=t=out:st={e - onscreen.FADE_OUT:.3f}:d={onscreen.FADE_OUT}:alpha=1[p{n}]")
@@ -308,7 +333,7 @@ def make_assemble(settings=None):
             old.unlink()
         paths = [segments_dir / f"shot_{n:03d}.mp4" for n in range(1, len(timeline) + 1)]
         photos = [n for n, (_, visual, _) in enumerate(timeline) if visual["kind"] in ("photo", "generated")]
-        motion = {n: MOTIONS[k % len(MOTIONS)] for k, n in enumerate(photos)}    # a different move each photo
+        motion = photo_motions(timeline, photos)        # beats' plan, never the same move twice in a row
         done = parallax_segments([{"image": timeline[n][1]["path"], "out": str(paths[n]),
                                    "frames": timeline[n][2] + extra[n], "motion": motion[n]} for n in photos],
                                  width, height, fps, encoder, settings)
@@ -334,9 +359,9 @@ def make_assemble(settings=None):
         # each scene is already at the target, but the pauses lower the whole: measured and set again
         narration = media.normalize_loudness(joined_wav, folder / "narration.wav", video["loudness_lufs"])
         joined_wav.unlink()
-        music = montage.music_of(folder)
+        options = video.get("music") or {}
+        music = montage.music_of(folder, options.get("default") and BASE / options["default"])
         if music:
-            options = video.get("music") or {}
             bed = media.music_bed(music, sum(lengths.values()), folder / "music_bed.wav",
                                   video["loudness_lufs"] + options.get("db", -20), options.get("eq_db", -4),
                                   options.get("fade_in", 2), options.get("fade_out", 3))
@@ -357,7 +382,11 @@ def make_assemble(settings=None):
         labels = [l if not l.get("foto") or (folder / l["foto"]).is_file() else without_photo(l) for l in labels]
         final = folder / video_name(state.get("topic") or script.title)
 
-        def final_pass(labels):
+        # the final pass encodes the whole video once: well under real time on the GPU, about real time on
+        # the CPU. Past this it is frozen (it happened with h264_nvenc, 2026-10-24): killed and done again
+        limit = max(FINAL_PASS_MIN_SECONDS, FINAL_PASS_SECONDS_PER_SECOND * sum(lengths.values()))
+
+        def final_pass(labels, encoder):
             filters = [ass_filter(subtitles_path, settings)] if burned else []
             on_screen = onscreen.document(labels, starts, lengths, width, height, video.get("font", "Arial"),
                                           label_options)
@@ -374,16 +403,29 @@ def make_assemble(settings=None):
             video_args += media.encode_args(video.get("quality", 21), fps, encoder) if filters or graph else ["-c:v", "copy"]
             media.ffmpeg("-i", joined, "-i", narration, *inputs, *video_args, "-map", "1:a",
                          "-c:a", "aac", "-b:a", "192k", "-ar", media.SAMPLE_RATE, "-movflags", "+faststart",
-                         final, cwd=BASE)
+                         *(["-t", f"{sum(lengths.values()):.3f}"] if inputs else []),   # the photos never end
+                         final, cwd=BASE, timeout=limit)
+
+        def encode(labels):
+            """The final pass; frozen on the GPU -> once more on the CPU (libx264)."""
+            try:
+                final_pass(labels, encoder)
+            except media.FFmpegHung:
+                if media.video_encoder(encoder) == "libx264":
+                    raise
+                print(f"  ⚠️  assemble: el paso final se colgó con la gráfica ({limit:.0f} s): se repite con la CPU")
+                final_pass(labels, "libx264")
 
         try:
-            final_pass(labels)
+            encode(labels)
+        except media.FFmpegHung:
+            raise
         except Exception as e:                       # noqa: BLE001 - without the photos it is the video as before
             if not any(l.get("foto") for l in labels):
                 raise
             print(f"  ⚠️  assemble: los retratos fallaron ({str(e).strip().splitlines()[-1][:200]}): "
                   "los rótulos van solo con texto")
-            final_pass([without_photo(l) for l in labels])
+            encode([without_photo(l) for l in labels])
         joined.unlink()
         return {"video_path": str(final), **({"subtitles_path": str(subtitles_path)} if burned else {})}
 

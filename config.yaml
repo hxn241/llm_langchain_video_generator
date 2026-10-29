@@ -39,8 +39,9 @@ llm:
   default:      {provider: openrouter, model: "anthropic/claude-sonnet-5.5", temperature: 0.3,
                  structured_output: json_schema, timeout: 300, max_tokens: 16000}
   # Respaldo de los nodos de texto: si Sonnet falla, ese nodo sigue con este el resto del run.
-  # Nemotron 3 Super gratis. Usa su propia temperatura, no la del nodo.
-  cloud:        {model: "nvidia/nemotron-3-super-120b-a12b:free"}
+  # Haiku 5.5 (de pago, céntimos por llamada). Hasta 2026-10-23, Nemotron 3 Super gratis: daba 404
+  # ("Function ... Not Found", su proveedor roto) y paraba el run cada vez que hacía falta.
+  cloud:        {model: "anthropic/claude-haiku-5.5"}
   research:     {temperature: 0.3, fallback: cloud}     # sus búsquedas (los hechos: facts)
   deep_research: {temperature: 0.3, fallback: cloud}   # las búsquedas de cada sección (los hechos: facts)
   # Extraer los hechos de cada texto leído (research y deep_research): la mitad del gasto de un vídeo
@@ -69,7 +70,7 @@ llm:
   # Con Sonnet (de `default`). Nemotron se saltaba las reglas de brief.md y beats.md (sujetos
   # repetidos, conceptos y marcas en los prompts).
   brief:        {temperature: 0.5, fallback: cloud}
-  beats:        {temperature: 0.4, fallback: cloud}
+  beats:        {temperature: 0.4, fallback: cloud, max_tokens: 32000}   # 2026-10-23: 16000 se quedaba corto
   # Título, resumen, etiquetas y texto de la miniatura para YouTube (scripts/prepare_upload.py,
   # fuera del pipeline; una llamada por vídeo).
   publish:      {temperature: 0.7, fallback: cloud}
@@ -139,13 +140,16 @@ visuals:
   # nasa en todos los vídeos: sus fotos de naves y salas blancas se colaban como "reloj atómico" o
   # "cámara de vacío" con un juez sin fichas; con las fichas (título y descripción de la NASA) Haiku las
   # rechaza y acepta las que sí son del tema (2026-10-15, data/runs/20261013-025807/prueba_juez).
+  # 2026-10-23: nasa solo si el brief dice que el vídeo es del espacio (brief.json: space): en los demás
+  # quitaba sitios a stock con fotos de Marte o de la ISS para "suelo seco" o "conducto de ventilación".
   sources:
     entity: [stock, wikimedia, nasa]
     generic: [stock, nasa]
     data: [stock]
     source: [stock]
     abstract: [stock, nasa]
-  beat_seconds: {short: [2, 4], long: [4, 6]}  # duración de cada plano; uno más largo (+20 %) se parte.
+  beat_seconds: {short: [1.5, 3], long: [4, 6]}  # duración de cada plano; uno más largo (+20 %) se parte.
+                              # short: [2, 4] hasta 2026-10-23 (director visual: cortes cada 1,5-3 s en shorts)
                               # long: [5, 10] hasta 2026-10-15 (con photo_max 5 se partían en fotos de 2-5 s);
                               # el autor quiere cada imagen 4-6 s (~60 planos en 5 min)
   # Una foto no se ve más de esto (solo vídeos largos: en los shorts los planos ya son cortos). Un
@@ -173,8 +177,9 @@ visuals:
   # 2026-10-14: Nano Banana para todas (~0,067 $ por imagen a 1K, ~2-3 $ por vídeo largo: lo que
   # más gasta del vídeo; el coste real de cada una, en <run>/costes.md, visuals_images). ComfyUI de
   # respaldo: arráncalo antes del run, por si Nano Banana falla o rechaza una imagen.
-  generator: comfy            # 2026-10-15: Z-Image en local (gratis); al autor le valen sus imágenes.
-                              # openrouter = Nano Banana (~2-2,7 $ por vídeo largo)
+  generator: openrouter       # 2026-10-23: Nano Banana para todas. Con comfy (Z-Image, 2026-10-15 a 23)
+                              # salían bichos con dos cabezas y fallaba en cortes, metáforas y gags.
+                              # ~0,07 $ por imagen a 1K (+ las que el juez rechaza y se repiten)
   generate_model: google/gemini-3.1-flash-image   # Nano Banana 2 (el 2.1 daba 429: cupo de Google agotado)
   generate_resolution: 1K     # 1K | 2K | 4K (no todos los modelos lo admiten: quítalo si da error).
                               # 1K: el vídeo es 1080p como mucho, más no se ve y cuesta más
@@ -187,6 +192,13 @@ visuals:
   # molécula, un campo magnético; beats.json: look). Va al final de su prompt en vez del de foto.
   # Sin fondo ni brillo fijos (con "dark background, soft volumetric glow" eran todas iguales).
   visualization_style: "photorealistic scientific visualization as in a science documentary, cinematic lighting, no text, no labels, no diagrams"
+  # Acabado de los otros registros (beats.json: look). Sin esto, los de graph/nodes/beats.py (LOOK_STYLES):
+  #   cutaway: algo real visto por dentro · analogy: la comparación del narrador · archive: escena de época
+  # look_styles: {cutaway: "...", analogy: "...", archive: "..."}
+  # El modelo con visión revisa cada imagen generada (deformidades, textos, que enseñe lo que se dice);
+  # una mala se genera otra vez con otra semilla, 2 veces como mucho; si sigue mal, lista.md la marca.
+  # 2026-10-23: cucarachas con dos cabezas entraron en el vídeo sin que nadie las viera.
+  check_generated: true
   # Fuente stock: bancos en orden de preferencia; uno sin clave en el .env se salta.
   # Límites: Pixabay 100 búsquedas/min, Pexels 200/hora (hasta 6 búsquedas por fragmento: 3
   # consultas x vídeo/foto; las repetidas salen de la caché). Para un vídeo largo, Pexels sube
@@ -241,7 +253,10 @@ video:
   labels: {enabled: true, portraits: true, seconds: {fuente: 4.5, persona: 4.5, termino: 3.0}}
   # Música: la tuya, montaje/musica.mp3 en la pausa review_visuals (sin ella, sin música). Volumen FIJO
   # (sin ducking): db por debajo de la voz (-17 más alta, -23 más baja); eq_db: hueco en 1-4 kHz para la voz.
-  music: {db: -20, eq_db: -4, fade_in: 2, fade_out: 3}
+  # default: la música del canal cuando montaje/ no trae una tuya (se copia allí como musica.mp3; sus
+  # créditos, de data/musica/timeless.txt, van solos a la descripción). "" = sin música por defecto.
+  music: {db: -15, eq_db: -4, fade_in: 0, fade_out: 0,   # fades en segundos; 0 = la pista tal cual viene
+          default: data/musica/timeless.mp3}
   # 2.5D en las fotos: el modelo de profundidad (GPU, .venv-tts; ~100 MB, se descarga la primera vez)
   # separa primer plano y fondo y el primer plano se mueve un poco más. strength: cuánto (sutil: 0.015-0.03).
   # Si falla, movimiento normal. Las fotos planas (gráficos, capturas) se mueven sin profundidad.
@@ -338,7 +353,11 @@ youtube:
   # Fuera del pipeline: scripts/prepare_upload.py (run -> carpeta lista) y scripts/upload_youtube.py
   # (carpeta -> YouTube). Ver src/services/publish.py y src/services/youtube.py.
   ready_dir: data/listo_para_subir     # una carpeta por vídeo: video.mp4, metadata.json, descripcion.md...
+  # Tus pistas de música, cada una con sus créditos al lado (timeless.mp3 + timeless.txt). Si montaje/musica.mp3
+  # es una de ellas, sus créditos van tal cual a la descripción; sin créditos, prepare_upload no prepara el vídeo.
+  music_dir: data/musica
   uploaded_dir: data/subidos           # adonde pasa la carpeta tras subirla (con youtube.json)
+  retention_dir: data/retencion        # scripts/retention.py: retención de los vídeos subidos (YouTube Analytics)
   client_secret: data/youtube/client_secret.json   # credencial OAuth de escritorio (Google Cloud)
   token: data/youtube/token.json       # se crea al autorizar tu canal la primera vez
   privacy: private            # private | unlisted | public (sin auditoría de Google, la API solo sube privado)

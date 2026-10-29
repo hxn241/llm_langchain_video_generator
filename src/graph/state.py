@@ -18,7 +18,26 @@ audio and its word times exist (a scene can have several visuals).
 """
 from typing import Literal, TypedDict
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class Draft(BaseModel):
+    """What a model answers: a list longer than its field's max_length is cut, not rejected. One
+    item too many lost the whole answer (2026-10-15: 11 "avoid" lost the brief; 2026-10-23: 4 web
+    searches lost deep_research) and sent the node to its fallback."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def at_most(cls, data):
+        if not isinstance(data, dict):
+            return data
+        for name, field in cls.model_fields.items():
+            limit = next((m.max_length for m in field.metadata if getattr(m, "max_length", None)), None)
+            value = data.get(name)
+            if limit and isinstance(value, list) and len(value) > limit:
+                data = {**data, name: value[:limit]}
+        return data
+
 
 Format = Literal["short", "long"]
 # news: something that has just happened; explainer: something that does not expire (how it works,
@@ -31,7 +50,7 @@ SectionRole = Literal["hook", "context", "tension", "development", "reveal", "co
 
 
 # ---------------------------------------------------------------- research
-class SearchPlan(BaseModel):
+class SearchPlan(Draft):
     video_type: VideoType = Field(description="news = cuenta algo que acaba de pasar (un lanzamiento, un descubrimiento, "
                                               "un anuncio con fecha); explainer = cuenta algo que no caduca (cómo "
                                               "funciona algo, por qué pasa, ventajas e inconvenientes de una técnica, "
@@ -44,7 +63,7 @@ class SearchPlan(BaseModel):
                                              "o 'en:Title' (el nombre del artículo, no una frase); news: []")
 
 
-class FactDraft(BaseModel):
+class FactDraft(Draft):
     fact: str = Field(description="Un dato concreto y verificable, en una frase que se entienda sola "
                                   "(quién, qué, cuándo, cifra). Opiniones solo atribuidas: 'Según X, ...'")
 
@@ -52,12 +71,12 @@ class FactDraft(BaseModel):
 MAX_FACTS = 30                # per text: more are cut, not rejected (a lost call loses the whole text)
 
 
-class FactsDraft(BaseModel):
+class FactsDraft(Draft):
     facts: list[FactDraft] = Field(description="Los datos del artículo relevantes para el tema; [] si no hay")
 
     @field_validator("facts", mode="before")
     @classmethod
-    def at_most(cls, value):
+    def at_most_facts(cls, value):
         return value[:MAX_FACTS] if isinstance(value, list) else value
 
 
@@ -67,7 +86,7 @@ class Fact(TypedDict, total=False):
     section: int              # deep_research: the outline section it was looked for (1-based)
 
 
-class SectionSearches(BaseModel):
+class SectionSearches(Draft):
     web: list[str] = Field(min_length=1, max_length=3,
                            description="1-3 búsquedas web en español (3-7 palabras), una por cosa que averiguar")
     wikipedia: list[str] = Field(default_factory=list, max_length=3,
@@ -83,16 +102,17 @@ class Source(TypedDict, total=False):
 
 
 # ------------------------------------------------------------------ angles
-class Angle(BaseModel):
+class Angle(Draft):
     title: str = Field(description="El enfoque en una frase: desde dónde se cuenta el tema")
     question: str = Field(description="La pregunta central que el vídeo responde al final y que hace seguir viéndolo")
     why: str = Field(description="Por qué engancharía a alguien que no sabe nada del tema")
-    hook: str = Field(description="Primera frase del vídeo, máx. 15 palabras, basada en un hecho")
+    hook: str = Field(description="Primera frase del vídeo, unas 12 palabras como mucho, literal y afirmada, "
+                                  "basada en un hecho")
     facts: list[int] = Field(default_factory=list, max_length=15,
                              description="Números de los hechos que sostienen este enfoque")
 
 
-class AnglesDraft(BaseModel):
+class AnglesDraft(Draft):
     angles: list[Angle] = Field(min_length=3, max_length=3, description="Tres enfoques DISTINTOS entre sí")
     reason: str = Field(description="Cuál de los tres es el más fuerte y por qué, en 1-2 frases")
     best: int = Field(description="Número del enfoque más fuerte: 1, 2 o 3 (se cuenta desde 1, no desde 0)")
@@ -103,7 +123,7 @@ class AnglesDraft(BaseModel):
 
 
 # ----------------------------------------------------------------- outline
-class OutlineSectionDraft(BaseModel):
+class OutlineSectionDraft(Draft):
     title: str = Field(description="Título corto de la sección (para el esquema, no se narra)")
     role: SectionRole = Field(description="Función en la historia: hook = engancha y plantea la pregunta; "
                                           "context = lo mínimo para entenderla; tension = el problema o lo que no "
@@ -121,7 +141,7 @@ class OutlineSectionDraft(BaseModel):
                                              "de referencia): 1-3 en vídeos largos, 0-2 en shorts; [] si no hace falta")
 
 
-class OutlineDraft(BaseModel):
+class OutlineDraft(Draft):
     title: str = Field(description="Título del vídeo: claro, atractivo, sin clickbait engañoso")
     angle: str = Field(description="El hilo conductor: la pregunta o idea central que recorre todo el vídeo")
     sections: list[OutlineSectionDraft] = Field(min_length=2, max_length=12, description="Secciones en orden: la primera "
@@ -133,18 +153,18 @@ class OutlineSection(OutlineSectionDraft):
     facts: list[int] = Field(default_factory=list)   # no cap: deep_research adds up to 15 per text read
 
 
-class Outline(BaseModel):
+class Outline(Draft):
     title: str
     angle: str
     sections: list[OutlineSection] = Field(min_length=1)
 
 
 # ------------------------------------------------------------------ script
-class SceneDraft(BaseModel):
+class SceneDraft(Draft):
     narration: str = Field(description="Lo que se narra en esta escena: 1-2 frases en español hablado")
 
 
-class SectionDraft(BaseModel):
+class SectionDraft(Draft):
     scenes: list[SceneDraft] = Field(min_length=1, max_length=20, description="Escenas de esta sección, en orden")
 
 
@@ -152,13 +172,13 @@ PLAN_HELP = ("El plan ANTES de escribir, en pocas líneas: la pregunta que abre,
              "resuelve, los nuevos ganchos, dónde va el dato potente y cómo cierra. No se narra")
 
 
-class SectionPlanDraft(BaseModel):
+class SectionPlanDraft(Draft):
     """One section of a long video in one call: its plan first (written before the scenes), then its scenes."""
     plan: str = Field(description=PLAN_HELP + " (el de esta sección, con su puente a la siguiente)")
     scenes: list[SceneDraft] = Field(min_length=1, max_length=20, description="Escenas de esta sección, en orden")
 
 
-class ScriptDraft(BaseModel):
+class ScriptDraft(Draft):
     """A whole script in one call (shorts, and long videos up to script.whole_max_words): the plan
     first (it is written before the scenes), then one entry per section of the outline."""
     plan: str = Field(description=PLAN_HELP + " (en un short, con el bucle: cómo enlaza la última frase con la "
@@ -172,7 +192,7 @@ class Scene(SceneDraft):
     section: int = 1          # 1-based section of the outline it belongs to
 
 
-class Script(BaseModel):
+class Script(Draft):
     title: str
     scenes: list[Scene] = Field(min_length=1)
     sources: list[str] = Field(default_factory=list)
@@ -200,7 +220,7 @@ class Script(BaseModel):
 
 
 # ------------------------------------------------------------------ review
-class ReviewIssue(BaseModel):
+class ReviewIssue(Draft):
     scene: int = Field(description="Número de la escena; 0 si es del vídeo entero")
     problem: str = Field(description="Qué falla, en una frase")
     fix: str = Field(description="Cómo arreglarlo, concreto (la frase nueva o qué cambiar), solo con los hechos")
@@ -209,12 +229,12 @@ class ReviewIssue(BaseModel):
                                       "que no se entiende, un gancho o un cierre que no funcionan")
 
 
-class DubiousFact(BaseModel):
+class DubiousFact(Draft):
     fact: int = Field(description="Número del hecho")
     why: str = Field(description="Por qué parece un error, en una frase (lo comprobará el autor)")
 
 
-class ScriptReview(BaseModel):
+class ScriptReview(Draft):
     summary: str = Field(description="Lo más importante de la revisión, en 1-2 frases, sin elogios")
     issues: list[ReviewIssue] = Field(default_factory=list, max_length=12,
                                       description="Lo que hay que arreglar, de más a menos importante (como mucho 8); "
@@ -224,13 +244,20 @@ class ScriptReview(BaseModel):
 
 
 # ------------------------------------------------------------ brief/beats/visuals
-class MetaphorDraft(BaseModel):
+class MetaphorDraft(Draft):
     phrase: str = Field(description="La expresión figurada, copiada del guion (p. ej. 'la burbuja está a punto de estallar')")
     show: str = Field(description="Qué se ve en su lugar, en español: cosas reales del universo visual, nunca la "
                                   "metáfora literal (p. ej. 'grúas paradas sobre pisos a medio construir')")
 
 
-class BriefDraft(BaseModel):
+class BriefDraft(Draft):
+    tone: str = Field(default="", description="El tono visual del vídeo en 2-6 palabras en español (serio, irónico, "
+                                              "épico, inquietante, curioso...)")
+    motifs: list[str] = Field(default_factory=list, max_length=3,
+                              description="2-3 motivos visuales recurrentes, en español: un objeto, un lugar o una "
+                                          "paleta que vuelve como hilo conductor y, con una variación, cerca del final")
+    arc: str = Field(default="", description="El arco visual en 1-2 frases, en español: con qué imagen engancha, "
+                                             "cómo evoluciona y cómo cierra")
     universe: list[str] = Field(min_length=4, max_length=20,
                                 description="Objetos, lugares, personas y acciones FILMABLES de ESTE vídeo, incluido el "
                                             "problema y las consecuencias de las que habla el guion, en INGLÉS y como se "
@@ -242,28 +269,43 @@ class BriefDraft(BaseModel):
                                          "'gente sonriendo'). Nunca algo de lo que habla el guion")
     metaphors: list[MetaphorDraft] = Field(default_factory=list, max_length=12,
                                            description="Cada expresión figurada del guion y cómo se enseña; [] si no hay")
-    style: str = Field(description="Estilo común de las imágenes, en INGLÉS, 10-25 palabras: SOLO tipo de foto, luz, "
-                                   "paleta y encuadre, sin ningún objeto, lugar ni fondo (va al final de cada prompt)")
-
-    @field_validator("universe", "avoid", "metaphors", mode="before")
-    @classmethod
-    def at_most(cls, value, info):
-        """More than the field's max_length is cut, not rejected (2026-10-15: 11 avoid lost Sonnet's whole brief)."""
-        limit = next(m.max_length for m in cls.model_fields[info.field_name].metadata if hasattr(m, "max_length"))
-        return value[:limit] if isinstance(value, list) else value
-
-
-ShotLook = Literal["photo", "visualization"]
+    style: str = Field(description="Acabado común de las FOTOS, en INGLÉS, 8-15 palabras: SOLO el tipo de imagen y el "
+                                   "tratamiento del color; ni luz, ni objetivo, ni encuadre, ni objetos, lugares o "
+                                   "fondos (va al final de cada prompt de foto)")
+    protagonist: str = Field(default="",
+                             description="El protagonista del vídeo en 1-4 palabras en español (la cosa, el ser o el "
+                                         "lugar del que va todo): el que más tienta a salir en todos los planos")
+    space: bool = Field(default=False,
+                        description="true solo si el vídeo trata del espacio: misiones, astronautas, planetas, la "
+                                    "Tierra vista desde órbita (entonces se buscan también fotos de la NASA)")
 
 
-class ShotDraft(BaseModel):
+ShotLook = Literal["photo", "visualization", "cutaway", "analogy", "archive"]
+# Free text, not Literal: a near miss ("gag_serio", "close-up") must not lose the whole BeatsDraft
+# (assemble maps the motion it understands: graph/nodes/assemble.py, PLANNED_MOTIONS)
+STRATEGIES = ("objeto real, consecuencia humana, metáfora visual, escala, contraste, gag serio, detalle, por dentro, "
+              "ambiente, reacción, archivo, analogía, callback")
+
+
+class ShotDraft(Draft):
+    strategy: str = Field(default="objeto real",
+                          description=f"Cómo cuenta el plano su intención, una de: {STRATEGIES}. Nunca la misma en "
+                                      "más de 2 planos seguidos")
     look: ShotLook = Field(default="photo",
-                           description="photo = algo que una cámara puede grabar; visualization = algo invisible por su "
-                                       "escala o su naturaleza (un átomo, un núcleo, una molécula, una célula por dentro, "
-                                       "un campo magnético, un agujero negro): se enseña con una visualización científica "
-                                       "fotorrealista, como en un documental")
+                           description="El registro del plano. photo = algo que una cámara puede grabar; "
+                                       "visualization = algo invisible por su escala o su naturaleza (un átomo, una "
+                                       "molécula, una célula por dentro, un campo magnético, un agujero negro); "
+                                       "cutaway = algo real visto POR DENTRO (corte, sección, carcasa transparente) "
+                                       "para enseñar cómo funciona; analogy = la comparación que hace el narrador, "
+                                       "puesta en escena; archive = algo que pasó hace décadas, con aspecto de su época")
     subject: str = Field(description="Qué se ve, en español, concreto (p. ej. 'sede del Banco de España en Madrid', "
                                      "'pareja joven revisando facturas en la cocina')")
+    why: str = Field(default="", description="En 1 frase en español: qué aporta al espectador más allá de repetir la "
+                                             "palabra de la narración")
+    framing: str = Field(default="medio", description="Tipo de plano, uno de: general, medio, detalle, macro, "
+                                                      "cenital. Nunca 3 seguidos iguales")
+    motion: str = Field(default="zoom_in", description="Movimiento de cámara sobre la imagen, uno de: zoom_in, "
+                                                       "zoom_out, pan_left, pan_right, static. Distinto del anterior")
     must_show: list[str] = Field(min_length=1, max_length=2,
                                  description="1-2 cosas fotografiables que TIENEN que verse en ESTE plano, en español "
                                              "(no las de los otros planos de la idea). Nunca cifras, textos ni ausencias")
@@ -271,18 +313,24 @@ class ShotDraft(BaseModel):
                                description="1-3 búsquedas en INGLÉS de ESTE plano para bancos de vídeo y fotos, de la "
                                            "más concreta a la más genérica: 1-3 sustantivos de lo que se VE")
     prompt: str = Field(description="Prompt en INGLÉS para generar la imagen si no se encuentra una buena: "
-                                    "40-70 palabras, sujeto, acción, lugar, luz, encuadre, terminado con el estilo")
+                                    "40-70 palabras, el sujeto en las primeras palabras, su forma, la acción, el "
+                                    "lugar, la luz y el encuadre, terminado con el acabado de su registro. Solo lo "
+                                    "que SE VE: nunca una parte que falta ('sin', 'headless', 'without')")
     generate: bool = Field(default=False,
                            description="true = se genera directamente, sin buscar en los bancos: un objeto "
-                                       "protagonista sobre fondo de estudio, una escena de época, una "
-                                       "visualización o algo técnico tan concreto que ningún banco lo tendrá. "
+                                       "protagonista sobre fondo de estudio, un cutaway, una analogía inventada, "
+                                       "una escena de época, una visualización o algo técnico tan concreto que "
+                                       "ningún banco lo tendrá. "
                                        "false = se busca primero (el mundo real corriente: lugares, gente, "
                                        "industria, naturaleza, el espacio)")
 
 
-class IdeaDraft(BaseModel):
+class IdeaDraft(Draft):
     start: str = Field(description="Las primeras 3-5 palabras del tramo, copiadas EXACTAMENTE de la narración")
     idea: str = Field(description="Qué cuenta este tramo, en una frase en español: la idea, no las palabras")
+    intent: str = Field(default="", description="La intención narrativa del tramo (una, o dos con '+'): gancho, dato, "
+                                                "escala, contraste, humor, metáfora, causa-consecuencia, emoción, "
+                                                "explicación técnica, giro, transición o cierre")
     kind: BeatKind = Field(description="entity = algo real y concreto con nombre propio (persona pública, "
                                        "institución, empresa, edificio, lugar, producto, evento); generic = algo "
                                        "real pero genérico que se puede filmar (gente, calles, objetos, acciones); "
@@ -298,12 +346,12 @@ class IdeaDraft(BaseModel):
                                                "uno con lo suyo que tiene que verse y sus búsquedas")
 
 
-class SceneIdeasDraft(BaseModel):
+class SceneIdeasDraft(Draft):
     scene: int = Field(description="Número de la escena")
     ideas: list[IdeaDraft] = Field(min_length=1, max_length=3, description="Las ideas de la escena (1-2), en orden")
 
 
-class BeatsDraft(BaseModel):
+class BeatsDraft(Draft):
     scenes: list[SceneIdeasDraft] = Field(description="Una entrada por cada escena pedida, en orden")
 
 
@@ -319,7 +367,12 @@ class Beat(TypedDict, total=False):
     must_show: list[str]      # this shot's (old beats.json: the idea's)
     must_not_show: list[str]  # the idea's; the brief's `avoid` counts for every beat
     subject: str              # this shot of the idea (a split idea: another shot per part)
-    look: str                 # ShotLook: photo | visualization (old beats.json: photo)
+    intent: str               # the idea's narrative intent (gancho, humor...)
+    strategy: str             # how the shot tells it (STRATEGIES)
+    why: str                  # what it adds beyond the word
+    framing: str              # general | medio | detalle | macro | cenital
+    motion: str               # zoom_in | zoom_out | pan_left | pan_right | static: the camera move on a photo
+    look: str                 # ShotLook: photo | visualization | cutaway | analogy | archive (old beats.json: photo)
     generate: bool            # straight to the image generator, not searched (old beats.json: false)
     queries: list[str]        # this shot's stock searches, most concrete first (old beats.json: the idea's;
                               # older ones: "query", one string)
@@ -330,7 +383,7 @@ class Beat(TypedDict, total=False):
 LabelKind = Literal["fuente", "persona", "termino"]
 
 
-class LabelDraft(BaseModel):
+class LabelDraft(Draft):
     scene: int = Field(description="Número de la escena donde aparece")
     start: str = Field(description="Las primeras 3-5 palabras desde donde aparece, copiadas EXACTAMENTE de la "
                                    "narración de esa escena (donde se nombra a la persona, el estudio o el término)")
@@ -345,12 +398,12 @@ class LabelDraft(BaseModel):
                                       "un término")
 
 
-class LabelsDraft(BaseModel):
+class LabelsDraft(Draft):
     labels: list[LabelDraft] = Field(default_factory=list, max_length=16,
                                      description="Los rótulos del vídeo, en el orden en que aparecen")
 
 
-class PortraitChoice(BaseModel):
+class PortraitChoice(Draft):
     reason: str = Field(description="Por qué es o no es la persona del vídeo: sus ocupaciones, dónde trabaja y "
                                     "sus años frente al rótulo y la narración (1-2 frases)")
     id: str = Field(default="", description="El id de la ficha (Q...) que es SEGURO la persona del vídeo; vacío "
@@ -371,7 +424,7 @@ class Label(TypedDict, total=False):
     foto_credito: str         # author · licence · Commons page (goes to creditos.txt)
 
 
-class VisualChoice(BaseModel):
+class VisualChoice(Draft):
     seen: list[str] = Field(default_factory=list, max_length=16,
                             description="PRIMERO, qué es cada imagen de verdad, en el orden de la cuadrícula, 3-10 "
                                         "palabras cada una, sin interpretarla para que encaje: lo que reconocería "
@@ -381,6 +434,24 @@ class VisualChoice(BaseModel):
                                     "dice (o por qué ninguna encaja)")
     best: int = Field(description="Número de la imagen que mejor muestra lo que se dice; 0 si ninguna")
     score: int = Field(ge=0, le=10, description="0-10: cuánto encaja la elegida (10 = muestra exactamente eso)")
+
+
+class GeneratedCheck(Draft):
+    seen: str = Field(description="PRIMERO, qué se ve de verdad en la imagen, en 1-2 frases, como lo diría alguien "
+                                  "que no sabe de qué va el vídeo")
+    problems: list[str] = Field(default_factory=list, max_length=6,
+                                description="Solo los fallos que un espectador notaría en 2-4 s, en una frase corta "
+                                            "en español: deformidades a simple vista (cabezas, patas o piezas de más "
+                                            "o de menos, cuerpos fundidos), texto inventado que llama la atención, lo "
+                                            "que no debe verse, o que no enseña lo que se pide; [] si no hay")
+    # optional: Haiku sometimes leaves it out (2026-10-23) and that lost the whole verdict; without it,
+    # no problems = usable
+    ok: bool | None = Field(default=None,
+                            description="true si se puede usar en el vídeo tal cual: ningún fallo de los de `problems`")
+
+    @property
+    def usable(self):
+        return self.ok if self.ok is not None else not self.problems
 
 
 # ------------------------------------------------------------------- media

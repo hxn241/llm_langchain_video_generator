@@ -31,6 +31,7 @@ appear on their words, with the same plan (no new images to pay for).
 """
 import json
 import math
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -42,7 +43,9 @@ from prompts import load_prompt
 from services.settings import load_settings, runs_dir
 
 NODE = "beats"
-SCENES_PER_CALL = 8           # scenes per LLM call (the whole script always goes as context)
+SCENES_PER_CALL = 4           # scenes per LLM call (the whole script always goes as context). 8 until
+                              # 2026-10-23: with strategy/why/framing/motion per shot and 1.5-3 s short
+                              # shots, 8 scenes passed Sonnet's 16000 output tokens
 LEAD = 0.1                    # a beat's image appears this much before its first word
 SPLIT_TOLERANCE = 1.2         # a beat up to 20 % over the maximum length is kept whole
 MAX_QUERY_WORDS = 3           # stock banks find nothing for longer searches ("light beam through copper cables")
@@ -50,14 +53,28 @@ QUERY_STOPWORDS = {"a", "an", "the", "of", "in", "on", "with", "through", "and",
                    "from", "by", "over", "under"}
 NEGATIONS = {"no", "not", "without", "none", "never", "empty"}   # a search can't ask for an absence: dropped
                               # (cut to 3 words, "space radiator no water" became "space radiator no")
-FIELDS = ("id", "scene", "word", "start", "seconds", "text", "kind", "idea", "look", "generate", "must_show", "must_not_show",
-          "subject", "queries", "prompt", "path")   # beats.json, in this order
+FIELDS = ("id", "scene", "word", "start", "seconds", "text", "kind", "idea", "intent", "strategy", "look", "why",
+          "framing", "motion", "generate", "must_show", "must_not_show", "subject", "queries", "prompt",
+          "path")   # beats.json, in this order
+FORMATS = {"short": "SHORT vertical 9:16 para el móvil (sección 7: composición vertical, cortes cada 1,5-3 s, "
+                    "más detalle y planos medios)",
+           "long": "LARGO horizontal 16:9"}
 # What cannot be photographed (an atom, a magnetic field) is shown as a scientific visualization: its
 # own style instead of the brief's photographic one (config.yaml: visuals.visualization_style)
 # (no fixed background or glow: with "dark background, soft volumetric glow" every visualization of the
 # nuclear clock video, 2026-10-15, looked the same)
 VISUALIZATION_STYLE = ("photorealistic scientific visualization as in a science documentary, cinematic lighting, "
                        "no text, no labels, no diagrams")
+# The other registers that are not a plain photo (config.yaml: visuals.look_styles); photo takes the brief's style
+LOOK_STYLES = {
+    "cutaway": "photorealistic cutaway view as in a science documentary, cinematic lighting, no text, no labels",
+    "analogy": "cinematic film still, rich natural colours, no text, no logos",
+    "archive": "authentic archival photograph of its decade, film grain, period colours or black and white, no text",
+}
+# A generator draws every thing a prompt names: "a headless ant" comes with a head (or two: 2026-10-23,
+# 8 prompts "headless" -> heads at both ends). A prompt with one of these is planned again.
+ABSENCE = re.compile(r"\b(headless|legless|wingless|faceless|eyeless|armless|limbless|toothless|without|missing|"
+                     r"lacking|absent|decapitated|amputated)\b", re.I)
 # A search used in more shots than this makes a monotonous video (2026-10-15, nuclear clock:
 # "laser optics table" in 12 of 40 shots). Each call plans SCENES_PER_CALL scenes and is told the
 # searches of the scenes planned before (used_queries), since it does not see them otherwise.
@@ -70,19 +87,25 @@ def used_queries(drafts):
                    for q in short_queries(shot.queries))
 
 
-def beats_request(state, script, audio, numbers, style, seconds, visualization_style=VISUALIZATION_STYLE,
-                  used=None):
-    parts = [f"Tema del vídeo: {state.get('topic') or script.title}", f"Título: {script.title}"]
+def absent_prompts(ideas):
+    """The prompts of a scene's ideas that ask for something missing (ABSENCE)."""
+    return [s.prompt for idea in ideas for s in idea.shots if ABSENCE.search(s.prompt)]
+
+
+def beats_request(state, script, audio, numbers, style, seconds, look_styles, used=None, retry=None,
+                  video_format="long"):
+    parts = [f"Tema del vídeo: {state.get('topic') or script.title}", f"Título: {script.title}",
+             f"Formato: {FORMATS.get(video_format, video_format)}"]
     if state.get("notes"):
         parts.append(f"Notas del autor: {state['notes']}")
     if state.get("brief"):
         parts += ["", "# Brief visual (todo plano sale de aquí)"] + brief_lines(state["brief"])
     parts += ["", f"Duración de cada plano: entre {seconds[0]} y {seconds[1]} segundos (una idea más larga "
                   "se ve con varios de sus planos seguidos).",
-              f"Acabado de los planos photo (termina su prompt con esto; la luz, el color y el encuadre "
-              f"los elige cada plano): {style}",
-              f"Acabado de los planos visualization (termina su prompt con esto; el fondo y el color los "
-              f"elige cada una): {visualization_style}", "",
+              "Acabado de cada registro (termina el prompt con el de su `look`; la luz, el color y el encuadre "
+              "los elige cada plano):", f"- photo: {style}"]
+    parts += [f"- {look}: {finish}" for look, finish in look_styles.items()]
+    parts += ["",
               "# Guion completo (número. [segundos · planos que necesita la escena] narración)",
               "Entre todas las ideas de una escena tiene que haber, como mínimo, tantos planos DISTINTOS "
               "como dice la escena: si una escena necesita 4 planos y tiene una sola idea, esa idea lleva "
@@ -94,6 +117,10 @@ def beats_request(state, script, audio, numbers, style, seconds, visualization_s
                       "planos de todo el vídeo: las que ya están en el límite no las repitas, busca otra cosa "
                       "del universo o de lo que se dice)"]
         parts += [f"- {q} ({n})" for q, n in used.most_common()]
+    if retry:
+        parts += ["", "# Rehaz estas escenas: sus prompts pedían algo que FALTA, y el generador dibuja todo lo que "
+                      "se nombra (pide una cosa 'sin X' y sale con X). Encuadra solo lo que hay:"]
+        parts += [f"- {p}" for p in retry]
     parts += ["", f"# Planifica las ideas de las escenas: {', '.join(map(str, numbers))}"]
     return "\n".join(parts)
 
@@ -112,15 +139,28 @@ def short_queries(queries):
     return list(dict.fromkeys(q for q in short if q))
 
 
+def without_repeats(prompt):
+    """The prompt without a comma-separated part said twice: the model writes "no text, no logos" and
+    then copies the finish, which says it again."""
+    seen, parts = set(), []
+    for part in prompt.split(","):
+        key = part.strip().lower().rstrip(".")
+        if key and key not in seen:
+            seen.add(key)
+            parts.append(part.strip())
+    return ", ".join(parts)
+
+
 def with_shot(beat):
     """A beat (or a part of a split idea) -> its own shot: part n shows shot n, with ITS searches
     and what must be seen in it (split_long never makes more parts than the idea has shots, so no
     shot is seen twice)."""
     shots = beat.pop("shots")
     shot = shots[min(beat.pop("part", 0), len(shots) - 1)]
-    return beat | {"subject": shot["subject"], "prompt": shot["prompt"], "must_show": shot["must_show"],
+    return beat | {"subject": shot["subject"], "prompt": without_repeats(shot["prompt"]), "must_show": shot["must_show"],
                    "queries": short_queries(shot["queries"]), "look": shot.get("look", "photo"),
-                   "generate": shot.get("generate", False)}
+                   "generate": shot.get("generate", False), "strategy": shot.get("strategy", ""),
+                   "why": shot.get("why", ""), "framing": shot.get("framing", ""), "motion": shot.get("motion", "")}
 
 
 def locate(phrase, words, after):
@@ -180,6 +220,7 @@ def scene_beats(scene, ideas, words, scene_seconds, min_seconds, max_seconds, st
         beats.append({"scene": scene.id, "word": index, "start": round(start, 3),
                       "kind": d.kind if d else "generic",
                       "idea": d.idea if d else scene.narration,
+                      "intent": d.intent if d else "",
                       "must_not_show": d.must_not_show if d else [],
                       "shots": list({s.prompt.strip().lower(): s.model_dump() for s in d.shots}.values()) if d else
                                [{"subject": scene.narration, "must_show": [], "queries": [], "look": "photo",
@@ -301,17 +342,28 @@ def make_beats(hub, settings=None):
             manual.write_beat_prompts(runs_dir(run_id), found, width, height, state.get("brief"))
             return {"beats": found}
 
-        drafts = {}
+        look_styles = {"visualization": options.get("visualization_style") or VISUALIZATION_STYLE,
+                       **LOOK_STYLES, **(options.get("look_styles") or {})}
+        drafts, absent = {}, {}
         ids = [s.id for s in script.scenes if s.id not in marks]          # scenes with your marks: no LLM
         groups = [ids[i:i + SCENES_PER_CALL] for i in range(0, len(ids), SCENES_PER_CALL)]
-        for attempt in range(2):                                # the scenes it skips: asked once more
+        for attempt in range(2):                     # the scenes it skips or that ask for an absence: once more
             for group in groups:
                 wanted = [i for i in group if i not in drafts]
                 if wanted:
+                    retry = [p for i in wanted for p in absent.get(i, [])]
                     draft = write.invoke({"text": beats_request(
-                        state, script, audio, wanted, style, seconds,
-                        options.get("visualization_style") or VISUALIZATION_STYLE, used_queries(drafts))})
-                    drafts |= {s.scene: s.ideas for s in draft.scenes if s.scene in wanted}
+                        state, script, audio, wanted, style, seconds, look_styles, used_queries(drafts), retry,
+                        video_format)})
+                    for s in draft.scenes:
+                        if s.scene not in wanted:
+                            continue
+                        absent[s.scene] = absent_prompts(s.ideas)
+                        if not absent[s.scene] or attempt == 1:
+                            drafts[s.scene] = s.ideas
+        if any(absent.get(i) for i in drafts):
+            print(f"  ⚠️  beats: escenas {', '.join(str(i) for i in drafts if absent.get(i))} siguen pidiendo algo "
+                  "que falta (el juez de las generadas lo revisará)")
 
         result = []
         for scene in script.scenes:

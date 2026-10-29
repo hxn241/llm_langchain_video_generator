@@ -58,11 +58,17 @@ def is_music(path):
     return Path(path).stem.lower() == MUSIC and Path(path).suffix.lower() in AUDIO_EXTENSIONS
 
 
-def music_of(run_folder):
-    """Your background music (montaje/musica.mp3...), or None: the video goes without music."""
+def music_of(run_folder, default=None):
+    """Your background music (montaje/musica.mp3...), or None: the video goes without music.
+    Without one, `default` (video.music.default: the channel's track) is copied there first, so
+    prepare_upload finds it and puts its credits (services/publish.py: music_credits)."""
     folder = folder_of(run_folder)
-    return next((p for p in sorted(folder.iterdir()) if p.is_file() and is_music(p)), None) \
+    found = next((p for p in sorted(folder.iterdir()) if p.is_file() and is_music(p)), None) \
         if folder.is_dir() else None
+    if found or not default or not Path(default).is_file():
+        return found
+    folder.mkdir(parents=True, exist_ok=True)
+    return Path(shutil.copy2(default, folder / f"{MUSIC}{Path(default).suffix.lower()}"))
 
 
 def _stamp(path):
@@ -82,7 +88,8 @@ def origin(visual):
     """Where a chosen visual comes from, for lista.md."""
     source = visual.get("source")
     if source == "generate":
-        return f"generada ({visual.get('provider')})"
+        problems = f" · ⚠️ revisar: {'; '.join(visual['check'])}" if visual.get("check") else ""
+        return f"generada ({visual.get('provider')}){problems}"
     if source == "manual":
         return f"tuya ({Path(visual['path']).name})"
     score = f" · {visual['score']}/10" if visual.get("score") is not None else ""
@@ -132,7 +139,7 @@ def write_list(run_folder, beats, visuals, manifest, extras=None):
              "- **Quitar:** borra `05.mp4`: el plano anterior sigue durante ese tiempo.",
              "- **Añadir:** `05.jpg` + `05b.mp4`: el tiempo del fragmento 5 se reparte entre los dos.",
              "- **Música:** deja aquí `musica.mp3` (o .wav, .m4a...): suena de fondo todo el vídeo, por "
-             "debajo de la voz. Sin ella, el vídeo va sin música.", "",
+             "debajo de la voz. Sin ella, se usa la del canal (config.yaml: video.music.default).", "",
              "| Nº | Momento | Dura | Texto | Origen |", "|---|---|---|---|---|"]
     for b in beats:
         names = [Path(f["path"]).name for f in found[b["id"]]]

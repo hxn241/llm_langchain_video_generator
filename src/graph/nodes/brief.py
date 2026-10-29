@@ -10,12 +10,24 @@ Saved to <run>/brief.json: edit it and `--redo brief` reads it again (and makes 
 delete it for a new brief.
 """
 import json
+import re
 
 from graph.state import BriefDraft, Script
 from prompts import load_prompt
 from services.settings import load_settings, runs_dir
 
 NODE = "brief"
+# The style goes at the end of EVERY photo prompt: a framing or a light in it makes every image the
+# same shot (2026-10-23: "cinematic macro photograph" -> 40 macro shots). Its parts with one of these
+# words are dropped: each shot chooses its own framing and light.
+FRAMING = re.compile(r"\b(macro|close-?up|wide|aerial|telephoto|lens|bokeh|depth of field|portrait|overhead|"
+                     r"light|lighting|lit|shot|angle|background|studio)\b", re.I)
+
+
+def clean_style(style):
+    """The brief's style without framing, light or background: "cinematic macro photograph, natural
+    colour grading" -> "natural colour grading"."""
+    return ", ".join(p.strip() for p in style.split(",") if p.strip() and not FRAMING.search(p))
 
 
 def brief_request(state, script):
@@ -32,9 +44,15 @@ def brief_lines(brief, indent=""):
     """The brief as readable lines (for the beats request, prompts_imagenes.md and the judge)."""
     if not brief:
         return []
-    lines = [f"{indent}Universo visual: {', '.join(brief.get('universe', []))}",
+    lines = [f"{indent}{name}: {value}" for name, value in
+             (("Tono", brief.get("tone")), ("Motivos recurrentes (hilo conductor y callback final)",
+                                            " · ".join(brief.get("motifs") or [])), ("Arco visual", brief.get("arc")))
+             if value]
+    lines += [f"{indent}Universo visual: {', '.join(brief.get('universe', []))}",
              f"{indent}Nunca debe verse: {', '.join(brief.get('avoid', [])) or '-'}",
              f"{indent}Estilo: {brief.get('style', '')}"]
+    if brief.get("protagonist"):
+        lines.append(f"{indent}Protagonista: {brief['protagonist']} (entero, como mucho en 1 de cada 3 planos)")
     for m in brief.get("metaphors", []):
         lines.append(f"{indent}Metáfora \"{m['phrase']}\" -> se ve: {m['show']}")
     return lines
@@ -53,7 +71,7 @@ def make_brief(hub, settings=None):
             return {"brief": found}
         script = Script.model_validate(state["script"])
         draft = write.invoke({"text": brief_request(state, script)})
-        draft.style = draft.style.strip() or settings["visuals"].get("image_style", "")
+        draft.style = clean_style(draft.style) or settings["visuals"].get("image_style", "")
         brief_file.write_text(json.dumps(draft.model_dump(), ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"  · brief: {len(draft.universe)} objetos del universo visual · {len(draft.avoid)} prohibidos · "
               f"{len(draft.metaphors)} metáforas")

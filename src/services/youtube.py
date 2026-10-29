@@ -10,7 +10,8 @@ Then the folder moves to youtube.uploaded_dir with youtube.json (the video id an
 is never uploaded twice.
 
 Setup once (config.yaml: youtube.client_secret, youtube.token):
-    1. console.cloud.google.com: a project, enable "YouTube Data API v3".
+    1. console.cloud.google.com: a project, enable "YouTube Data API v3" (and "YouTube Analytics
+       API" for scripts/retention.py).
     2. OAuth consent screen: External, add your Google account as a test user.
     3. Credentials > OAuth client ID > Desktop app > download the JSON to youtube.client_secret.
     4. The first upload opens the browser to choose your channel; the token is saved for later.
@@ -27,7 +28,8 @@ from llmkit import config
 from services.settings import load_settings
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
-          "https://www.googleapis.com/auth/youtube.force-ssl"]      # force-ssl: subtitles
+          "https://www.googleapis.com/auth/youtube.force-ssl",       # force-ssl: subtitles
+          "https://www.googleapis.com/auth/yt-analytics.readonly"]  # retention (services/retention.py)
 TAGS_MAX_CHARS = 450              # YouTube's limit is 500 (it counts quotes around tags with spaces)
 CHUNK = 8 * 1024 * 1024
 
@@ -36,9 +38,11 @@ def _options():
     return load_settings().get("youtube", {})
 
 
-def client():
-    """An authorized YouTube API client (the first time it opens the browser to choose the channel)."""
+def client(api="youtube", version="v3"):
+    """An authorized YouTube API client (the first time it opens the browser to choose the channel).
+    client("youtubeAnalytics", "v2"): the Analytics API (enable it in the same Cloud project)."""
     try:
+        from google.auth.exceptions import RefreshError
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from google_auth_oauthlib.flow import InstalledAppFlow
@@ -49,16 +53,23 @@ def client():
     secret = config.BASE / options.get("client_secret", "data/youtube/client_secret.json")
     token = config.BASE / options.get("token", "data/youtube/token.json")
     creds = Credentials.from_authorized_user_file(str(token), SCOPES) if token.exists() else None
+    if creds and not set(SCOPES) <= set(json.loads(token.read_text(encoding="utf-8")).get("scopes") or []):
+        print("  · la autorización guardada no incluye todos los permisos: se abre el navegador para autorizar de nuevo")
+        creds = None                      # a token from before a scope was added: it would answer 403
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except RefreshError:          # a consent screen in "Testing": Google revokes it after 7 days
+                print("  · la autorización de YouTube ha caducado: se abre el navegador para autorizar de nuevo")
+                creds = None
+        if not creds or not creds.valid:
             if not secret.exists():
                 raise SystemExit(f"Falta la credencial OAuth en {secret} (ver src/services/youtube.py)")
             creds = InstalledAppFlow.from_client_secrets_file(str(secret), SCOPES).run_local_server(port=0)
         token.parent.mkdir(parents=True, exist_ok=True)
         token.write_text(creds.to_json(), encoding="utf-8")
-    return build("youtube", "v3", credentials=creds)
+    return build(api, version, credentials=creds)
 
 
 def limited_tags(tags):

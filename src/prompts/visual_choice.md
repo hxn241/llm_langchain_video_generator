@@ -9,11 +9,13 @@ Si la petición trae las FICHAS de las imágenes (lo que dice su fuente: el tít
 ## Descarta (score 0, aunque sea la única del tema)
 
 - Gráficos, iconos, flechas, infografías, tartas, porcentajes, signos de interrogación, engranajes, dibujos, personajes animados, montajes y fondos de color o pantallas verdes.
-- Renders e ilustraciones 3D, SALVO en un plano de VISUALIZACIÓN CIENTÍFICA (te lo dice la petición): ahí vale un render o una animación fotorrealista de lo que se nombra (un átomo, una molécula, un campo magnético), y siguen sin valer dibujos planos, iconos, flechas, etiquetas y textos. En un plano de FOTO o VÍDEO REAL, solo vale fotografía o vídeo real.
+- Renders e ilustraciones 3D, SALVO en un plano de VISUALIZACIÓN CIENTÍFICA o de VISTA POR DENTRO (te lo dice la petición): ahí vale un render o una animación fotorrealista de lo que se nombra (un átomo, una molécula, un campo magnético, un motor seccionado), y siguen sin valer dibujos planos, iconos, flechas, etiquetas y textos. En los demás planos, solo vale fotografía o vídeo real.
 - Carteles o textos grandes en otro idioma ("SALE", "Homes for Sale") o con cifras que no son las del vídeo.
 - Un lugar reconocible de OTRO país cuando el vídeo es sobre España (el Parlamento de Budapest, Nueva York, Dubái), y dinero que no es euro.
 - Marcas de agua, logotipos, imágenes borrosas o donde lo importante apenas se ve en el recorte.
 - Lo que la petición dice que NO debe verse (p. ej. pompas de jabón cuando se habla de "la burbuja inmobiliaria"): como mucho 2, aunque sea del tema.
+
+- Clichés de divulgación, si la narración no habla literalmente de ellos (el planeta Tierra desde el espacio, una grúa genérica, engranajes girando, un apretón de manos de negocios, un cerebro brillante con conexiones, código binario, un robot humanoide blanco, un candado digital, una bombilla de "idea", un globo terráqueo con líneas de red, gente sonriendo a cámara en una oficina, un hacker con capucha): como mucho 3.
 
 ## No inventes
 
