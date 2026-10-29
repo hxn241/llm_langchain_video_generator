@@ -163,6 +163,7 @@ Solo cuando el run empieza sin `--topic`.
   - ¿se puede explicar?
   - ¿dura en el tiempo?
   - ¿hay algo que enseñar?
+- Como pista (±1 punto como mucho), cómo les ha ido a los vídeos del canal: el último informe de `scripts/retention.py` (`data/retencion/<fecha>.json`). Los shorts entran solo con su "se quedaron viendo" (del CSV de YouTube Studio en `data/retencion/studio/`); los largos, por vistas. Con menos de 5 vídeos, o sin informe, se puntúa como siempre.
 - Se suman los temas propuestos en los últimos `reserve_days` y no elegidos. Todo va a `data/temas/<fecha>.md`.
 - Opciones en la pausa:
   - `[y]` el primero; `[e]` otro número.

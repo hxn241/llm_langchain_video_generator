@@ -42,6 +42,9 @@ STUDIO_COLUMNS = (
     ("stayed", ("quedaron", "stayed")),
     ("impressions", ("impresiones", "impressions")),
 )
+# ... and the views, by the exact header ("Visualizaciones interesadas", "Tiempo de visualización"
+# are other things): Studio's are up to date, the API's come 2-3 days late (4306 vs 1423)
+STUDIO_EXACT = {"visualizaciones": "views", "views": "views"}
 
 
 def _options():
@@ -145,6 +148,15 @@ def number(text):
         return None
 
 
+def studio_number(text):
+    """A number of Studio's CSV: written plainly ("75.67", "23394"), so read as it is; only
+    something else (a CSV saved again by a spreadsheet, "75,67") goes through number()."""
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return number(text)
+
+
 def _studio_rows(path):
     """[(name, rows)] of a Studio export: a .csv, or every .csv inside a .zip."""
     if path.suffix.lower() == ".zip":
@@ -156,8 +168,8 @@ def _studio_rows(path):
 
 def studio(folder=None):
     """{video id: {impressions, ctr, stayed}} from the CSVs in data/retencion/studio/ (newest file
-    last, so it wins), and the notes of what was read. A CSV without a video id column (the chart
-    or the totals of an export) is skipped."""
+    last, so it wins), and the notes of what was read. A CSV by day (a "Fecha" column: the chart of
+    an export) or without a video id column (the totals) is skipped."""
     folder = Path(folder or _folder() / "studio")
     out, notes = {}, []
     files = sorted((p for p in folder.glob("**/*") if p.suffix.lower() in (".csv", ".zip")),
@@ -172,13 +184,15 @@ def studio(folder=None):
             if len(rows) < 2:
                 continue
             header = [_plain(h) for h in rows[0]]
+            if any(h.strip() in ("fecha", "date") for h in header):
+                continue                  # "Datos del gráfico.csv": one row per day, not the video's total
             id_col = next((i for i in range(len(header)) if sum(1 for r in rows[1:] if len(r) > i
                                                                   and VIDEO_ID.match(r[i].strip())) >= max(1, (len(rows) - 2) // 2)), None)
             if id_col is None:
                 continue
             columns = {}
             for i, h in enumerate(header):
-                key = next((k for k, words in STUDIO_COLUMNS if any(w in h for w in words)), None)
+                key = STUDIO_EXACT.get(h.strip()) or next((k for k, words in STUDIO_COLUMNS if any(w in h for w in words)), None)
                 if key and key not in columns:
                     columns[key] = i
             if not columns:
@@ -188,7 +202,7 @@ def studio(folder=None):
             for r in rows[1:]:
                 vid = r[id_col].strip() if len(r) > id_col else ""
                 if VIDEO_ID.match(vid):
-                    values = {k: number(r[i]) for k, i in columns.items() if i < len(r)}
+                    values = {k: studio_number(r[i]) for k, i in columns.items() if i < len(r)}
                     out.setdefault(vid, {}).update({k: v for k, v in values.items() if v is not None})
                     found += 1
             notes.append(f"{name}: {found} vídeos · {', '.join(sorted(columns))}")
@@ -225,6 +239,8 @@ def collect():
                              metrics="views,averageViewDuration,averageViewPercentage,likes,subscribersGained")
             row = (summary.get("rows") or [[0, 0, 0, 0, 0]])[0]
             stats = dict(zip(("views", "avg_seconds", "avg_percent", "likes", "subscribers"), row))
+            if (from_studio.get(vid) or {}).get("views") is not None:      # up to date (the API's lag)
+                stats["views"] = max(stats["views"], int(from_studio[vid]["views"]))
             curve = _query(analytics, startDate=start, endDate=today, filters=filters,
                            metrics="audienceWatchRatio", dimensions="elapsedVideoTimeRatio")
             curve = [(x, y) for x, y in curve.get("rows") or []]

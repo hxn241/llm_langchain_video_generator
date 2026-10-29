@@ -5,7 +5,9 @@ every topic (data/temas/registro.json) so that none is made twice. You choose; t
        and without the entries already in the record (proposed, discarded, made or uploaded)
     2. one call to the model (llm.topics, prompts/topics.md): it groups the entries that tell the
        same story and scores them for the channel (a surprising number, can it be explained,
-       does it last, is there something to show). They go to the record as "propuesto"
+       does it last, is there something to show), with how the channel's videos did as a hint
+       (the newest data/retencion/*.json of scripts/retention.py, if there is one). They go to the
+       record as "propuesto"
     3. the list: the proposed topics of the last reserve_days, best first (the new ones and the
        ones you did not choose yet). data/temas/<yyyymmdd-hhmm>.md has it with a command each
 
@@ -46,6 +48,7 @@ FEED_LINK = re.compile(r"<link[^>]+type=[\"']application/(?:rss|atom)\+xml[\"'][
 HREF = re.compile(r"href=[\"']([^\"']+)[\"']", re.I)
 TAG = re.compile(r"<[^>]+>")
 STATUS_LABELS = {"propuesto": "propuesto", "en_curso": "en curso", "subido": "subido", "descartado": "descartado"}
+PERFORMANCE_MIN = 5             # fewer videos with views than this: no history for the model (it says nothing)
 
 
 class TopicCandidate(Draft):
@@ -240,8 +243,49 @@ def reserve(topics, days, skip=()):
     return sorted(ready, key=lambda t: (t.get("score", 0), t.get("found", "")), reverse=True)
 
 
+# ------------------------------------------------------------------ how the channel's videos did
+def _percent(value):
+    return f"{value:.0f} %" if value is not None else "?"
+
+
+def performance(settings=None):
+    """How the channel's videos did, from the newest report of scripts/retention.py
+    (data/retencion/<yyyymmdd>.json), one line per video with views, best first: shorts by "stayed
+    to watch" (the first second, what YouTube spreads them by), long videos by views. A short without
+    "stayed to watch" (no Studio CSV for it) is left out: its % watched would mislead (a short that
+    lost half its audience in the first second can show 95 %, the ones who stayed watched it all).
+    [] without a report, with fewer than PERFORMANCE_MIN videos, or if it cannot be read: the
+    topics are then scored as always."""
+    settings = settings or load_settings()
+    folder = config.BASE / settings.get("youtube", {}).get("retention_dir", "data/retencion")
+    reports = sorted(p for p in folder.glob("*.json") if re.fullmatch(r"\d{8}", p.stem)) if folder.exists() else []
+    if not reports:
+        return []
+    try:
+        videos = [v for v in json.loads(reports[-1].read_text(encoding="utf-8")) if v["stats"]["views"]]
+        when = datetime.strptime(reports[-1].stem, "%Y%m%d").date()
+        lines = []
+        for short in (True, False):
+            group = [v for v in videos if v["short"] == short and (not short or v["studio"].get("stayed") is not None)]
+            key = (lambda v: v["studio"]["stayed"]) if short else (lambda v: v["stats"]["views"])
+            for v in sorted(group, key=key, reverse=True):
+                days = max(1, (when - date.fromisoformat(v["published"])).days)
+                parts = [f"- [{'short' if short else 'largo'}] {v['title']}",
+                         f"{v['stats']['views']} vistas en {days} {'día' if days == 1 else 'días'}",
+                         f"visto de media el {_percent(v['stats']['avg_percent'])}"]
+                if v["studio"].get("stayed") is not None:
+                    parts.append(f"se quedaron viendo el {_percent(v['studio']['stayed'])}")
+                if not short and v["studio"].get("ctr") is not None:   # shorts are seen in the feed, without it
+                    parts.append(f"clics en la miniatura el {v['studio']['ctr']:.1f} %".replace(".", ","))
+                lines.append(" · ".join(parts))
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"  · topics: no se puede leer {reports[-1].name} ({e}): los temas se puntúan sin el historial")
+        return []
+    return lines if len(lines) >= PERFORMANCE_MIN else []
+
+
 # ------------------------------------------------------------------ the model
-def topics_request(entries, done, how_many):
+def topics_request(entries, done, how_many, past=()):
     parts = [f"Propón como mucho {how_many} temas.", "", "# Entradas recientes"]
     for i, e in enumerate(entries, 1):
         parts.append(f"[{i}] {e['title']} ({e['site']}, {e['date'] or 'sin fecha'})")
@@ -251,13 +295,16 @@ def topics_request(entries, done, how_many):
         parts += ["", "# Vídeos ya hechos o descartados (no los propongas otra vez, ni el mismo tema contado "
                       "de otra forma)"]
         parts += [f"- {t}" for t in done]
+    if past:
+        parts += ["", f"# Cómo les ha ido a los vídeos del canal ({len(past)} vídeos, de mejor a peor; "
+                      "una pista, no una regla: \"Lo que ha funcionado en el canal\")", *past]
     return "\n".join(parts)
 
 
-def score(entries, hub, done=(), how_many=10):
-    """-> new record items (status propuesto), best first."""
+def score(entries, hub, done=(), how_many=10, past=()):
+    """-> new record items (status propuesto), best first. past: performance() lines."""
     draft = hub.chain(load_prompt(NODE), schema=TopicsDraft, node=NODE).invoke(
-        {"text": topics_request(entries, done, how_many)})
+        {"text": topics_request(entries, done, how_many, past)})
     items = []
     for c in sorted(draft.candidates, key=lambda c: c.score, reverse=True)[:how_many]:
         numbers = [n for n in dict.fromkeys(c.entries) if 1 <= n <= len(entries)]
@@ -350,7 +397,10 @@ def find(hub=None, days=None, how_many=None, extra_feeds=(), use_model=True, ski
     if new:
         print(f"  · topics: {len(new)} entradas nuevas de {len(entries)} -> el modelo las puntúa")
         ids = {t["id"] for t in topics}
-        topics += [t for t in score(new, hub, done_titles(topics, settings), how_many) if t["id"] not in ids]
+        past = performance(settings)
+        if past:
+            print(f"  · topics: con el historial de {len(past)} vídeos del canal (data/retencion)")
+        topics += [t for t in score(new, hub, done_titles(topics, settings), how_many, past) if t["id"] not in ids]
         seen.update({e["url"]: date.today().isoformat() for e in new})
         save_registry(topics, settings, seen)
     else:

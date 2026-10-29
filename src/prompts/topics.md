@@ -25,6 +25,16 @@ Lo que la baja:
 
 Usa toda la escala: 9-10 es un tema que pondrías hoy mismo; 5 es correcto sin más; 3 o menos, no lo propongas.
 
+## Lo que ha funcionado en el canal
+
+Si la petición trae "Cómo les ha ido a los vídeos del canal", úsalo como una pista más, no como una regla:
+
+- **Qué mirar:** en los shorts, "se quedaron viendo" es lo que más cuenta: es quien no deslizó en el primer segundo, y YouTube enseña más los shorts que retienen ahí. Después, el % visto de media. Las vistas dependen de los días que lleva publicado: un vídeo de 2 días con 800 vistas va mejor que uno de 20 días con 1.300.
+- **Qué sacar:** el TIPO de tema que retiene más o menos (un ser vivo extraño, una catástrofe, un misterio histórico, la física de algo cotidiano, la salud, la energía…), no el tema concreto. Un candidato que se parece a los que mejor funcionan puede subir hasta 1 punto; uno que se parece a los que peor, bajar hasta 1. Nunca más: el dato sorprendente y que se pueda explicar siguen mandando.
+- **Pocos vídeos, poca confianza:** con menos de 20, las diferencias pueden ser casualidad, y el gancho o las imágenes de cada vídeo influyen tanto como el tema. Que el tipo se repita en varios vídeos pesa más que un vídeo suelto.
+- **Que el canal no se estreche:** al menos la mitad de los candidatos son de tipos distintos a los que mejor han funcionado, si son buenos temas. Un tipo que ha ido peor no se descarta: puede haber fallado el gancho.
+- **Dilo en `why`** cuando el historial ha movido la nota ("se parece a los shorts de seres vivos raros, que retienen más").
+
 ## Cada candidato
 
 - `topic`: el tema en una frase en español, concreto, que sirva para buscar sobre él ("Cómo un material blanco enfría un edificio sin electricidad", no "Nuevos materiales").
@@ -32,7 +42,7 @@ Usa toda la escala: 9-10 es un tema que pondrías hoy mismo; 5 es correcto sin m
 - `format`: `short` si se explica en algo más de un minuto: un dato, su porqué y una comparación; `long` si necesita contexto, historia o varios pasos (~5 min).
 - `datazo`: el dato tal como lo dan el título o el resumen de las entradas, y nada más. No lo completes con lo que sabes del tema (otra cifra, otro récord): el autor lo usa como nota para el vídeo y todo lo que pongas aquí se da por comprobado. Si las entradas no traen un dato, déjalo vacío.
 - `missing`: lo que habría que buscar porque las entradas no lo dan (la cifra exacta, el mecanismo, el tamaño de la muestra). Aquí sí puedes orientar con lo que sabes, como pista para investigar.
-- `hook`: la primera frase del vídeo, hablada, que engancha con el dato o la pregunta. Sin "¿Sabías que...?".
-- `why`: una frase con lo bueno y lo que falla.
+- `hook`: la primera frase del vídeo, hablada, que engancha con el dato o la pregunta: unas 12 palabras, algo concreto que se imagina al instante haciendo algo que no debería, sin empezar por una fecha, un lugar o un nombre que nadie conoce. Sin "¿Sabías que...?".
+- `why`: una frase con lo bueno y lo que falla (y si el historial del canal ha movido la nota, por qué).
 
 Ordena de mayor a menor nota y no repitas el mismo tema dos veces.
